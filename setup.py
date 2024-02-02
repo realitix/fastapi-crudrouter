@@ -25,7 +25,6 @@ setup(
     install_requires=["fastapi"],
     python_requires=">=3.7",
     include_package_data=True,
-    package_data={"fastapi-crudrouter": ["py.typed"]},
     zip_safe=False,
     keywords=["fastapi", "crud", "restful", "routing", "generator", "crudrouter"],
     classifiers=[

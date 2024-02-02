@@ -1,0 +1,1 @@
+include fastapi_crudrouter/py.typed
