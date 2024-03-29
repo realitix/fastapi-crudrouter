@@ -36,6 +36,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         db: SessionGenerator,
         create_schema: Optional[Type[SCHEMA]] = None,
         update_schema: Optional[Type[SCHEMA]] = None,
+        filter_schema: Optional[Type[SCHEMA]] = None,
         prefix: Optional[str] = None,
         tags: Optional[List[str]] = None,
         paginate: Optional[int] = None,
@@ -62,6 +63,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             self.use_async = use_async
         self._pk: str = db_model.__table__.primary_key.columns.keys()[0]
         self._pk_type: type = _utils.get_pk_type(schema, self._pk)
+        self.filter_depends = Depends(filter_schema) if filter_schema else Depends(lambda: None)
 
         super().__init__(
             schema=schema,
@@ -98,11 +100,18 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         async def async_route(
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
+            filters: Any = self.filter_depends
         ) -> List[Model]:
             skip, limit = pagination.get("skip"), pagination.get("limit")
 
+            query = select(self.db_model)
+            if filters:
+                for k, v in filters:
+                    if v is not None:
+                        query = query.where(getattr(self.db_model, k) == v)
+
             res = await db.execute(
-                select(self.db_model)
+                query
                 .order_by(getattr(self.db_model, self._pk))
                 .limit(limit)
                 .offset(skip)
