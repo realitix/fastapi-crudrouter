@@ -1,4 +1,4 @@
-from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias
+from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints
 
 from fastapi import Depends, HTTPException
 
@@ -63,6 +63,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             self.use_async = use_async
         self._pk: str = db_model.__table__.primary_key.columns.keys()[0]
         self._pk_type: type = _utils.get_pk_type(schema, self._pk)
+        self.filter_schema = filter_schema
         self.filter_depends = Depends(filter_schema) if filter_schema else Depends(lambda: None)
 
         super().__init__(
@@ -80,6 +81,18 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             delete_all_route=delete_all_route,
             **kwargs
         )
+
+    def _get_join_where(self, filter_key: str) -> Any:
+        if not self.filter_schema:
+            return None
+        model_fields = self.filter_schema.model_fields
+        if filter_key not in model_fields:
+            return None
+        metadata = model_fields[filter_key].metadata
+        if not metadata:
+            return None
+
+        return metadata[0]
 
     def _get_all(self, *args: Any, **kwargs: Any) -> CALLABLE_LIST:
         def route(
@@ -108,7 +121,11 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             if filters:
                 for k, v in filters:
                     if v is not None:
-                        query = query.where(getattr(self.db_model, k) == v)
+                        join_attr = self._get_join_where(k)
+                        if not join_attr:
+                            query = query.where(getattr(self.db_model, k) == v)
+                        else:
+                            query = query.join(join_attr.class_).where(join_attr == v)
 
             res = await db.execute(
                 query
