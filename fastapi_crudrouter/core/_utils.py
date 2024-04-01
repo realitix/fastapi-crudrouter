@@ -67,11 +67,11 @@ def pagination_factory(max_limit: Optional[int] = None) -> Any:
     Created the pagination dependency to be used in the router
     """
 
-    def pagination(skip: int = 0, limit: Optional[int] = max_limit) -> PAGINATION:
-        if skip < 0:
+    def pagination(page: int = 1, limit: Optional[int] = max_limit) -> PAGINATION:
+        if page < 1:
             raise create_query_validation_exception(
-                field="skip",
-                msg="skip query parameter must be greater or equal to zero",
+                field="page",
+                msg="page query parameter must be greater or equal to one",
             )
 
         if limit is not None:
@@ -86,6 +86,6 @@ def pagination_factory(max_limit: Optional[int] = None) -> Any:
                     msg=f"limit query parameter must be less then {max_limit}",
                 )
 
-        return {"skip": skip, "limit": limit}
+        return {"page": page, "limit": limit}
 
     return Depends(pagination)

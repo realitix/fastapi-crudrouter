@@ -113,9 +113,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         async def async_route(
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
-            filters: Any = self.filter_depends
+            filters: self.filter_schema = self.filter_depends
         ) -> List[Model]:
-            skip, limit = pagination.get("skip"), pagination.get("limit")
+            page, limit = pagination.get("skip"), pagination.get("limit")
+            skip = (page - 1) * limit
 
             query = select(self.db_model)
             if filters:
