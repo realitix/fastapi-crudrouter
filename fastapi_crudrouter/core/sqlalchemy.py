@@ -115,8 +115,11 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             pagination: PAGINATION = self.pagination,
             filters: self.filter_schema = self.filter_depends
         ) -> List[Model]:
-            page, limit = pagination.get("skip"), pagination.get("limit")
-            skip = (page - 1) * limit
+            page, limit = pagination.get("page"), pagination.get("limit")
+            if page and limit:
+                skip = (page - 1) * limit
+            else:
+                skip = 0
 
             query = select(self.db_model)
             if filters:
