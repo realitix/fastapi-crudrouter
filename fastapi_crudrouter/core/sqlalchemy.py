@@ -159,8 +159,11 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             db_models: List[Model] = []
             for row in res:
                 (model,) = row
+                db_models.append(model)
 
             count = (await db.execute(query_count)).first()
+            from loguru import logger
+            logger.error(count)
 
             return {
                 "pagination": {
