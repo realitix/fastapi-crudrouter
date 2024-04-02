@@ -1,4 +1,4 @@
-from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints
+from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints, TypedDict
 
 from fastapi import Depends, HTTPException
 
@@ -12,6 +12,7 @@ try:
     from sqlalchemy.ext.declarative import DeclarativeMeta as Model
     from sqlalchemy.exc import IntegrityError, NoResultFound
     from sqlalchemy import __version__ as sqlalchemy_version
+    from sqlalchemy import func
 
     if sqlalchemy_version >= "1.4":
         from sqlalchemy.future import select
@@ -26,6 +27,17 @@ else:
 
 CALLABLE = Callable[..., Model]
 CALLABLE_LIST = Callable[..., List[Model]]
+
+
+class PaginationResult(TypedDict):
+    total_records: int
+    total_pages: int
+    current_page: int
+
+
+class GetAllResult(TypedDict):
+    pagination: PaginationResult
+    data: list[Model]
 
 
 class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
@@ -114,22 +126,26 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
             filters: self.filter_schema = self.filter_depends
-        ) -> List[Model]:
-            page, limit = pagination.get("page"), pagination.get("limit")
-            if page and limit:
+        ) -> GetAllResult:
+            page, limit = pagination.get("page", 1), pagination.get("limit")
+            if limit:
                 skip = (page - 1) * limit
             else:
                 skip = 0
 
-            query = select(self.db_model)
-            if filters:
-                for k, v in filters:
-                    if v is not None:
-                        join_attr = self._get_join_where(k)
-                        if not join_attr:
-                            query = query.where(getattr(self.db_model, k) == v)
-                        else:
-                            query = query.join(join_attr.class_).where(join_attr == v)
+            def query_where(query_src: Any) -> Any:
+                if filters:
+                    for k, v in filters:
+                        if v is not None:
+                            join_attr = self._get_join_where(k)
+                            if not join_attr:
+                                query_src = query_src.where(getattr(self.db_model, k) == v)
+                            else:
+                                query_src = query_src.join(join_attr.class_).where(join_attr == v)
+                return query_src
+
+            query = query_where(select(self.db_model))
+            query_count = query_where(select(func.count()).select_from(self.db_model))
 
             res = await db.execute(
                 query
@@ -143,9 +159,17 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             db_models: List[Model] = []
             for row in res:
                 (model,) = row
-                db_models.append(model)
 
-            return db_models
+            count = (await db.execute(query_count)).first()
+
+            return {
+                "pagination": {
+                    "total_records": count,
+                    "total_pages": count / limit if limit else 1,
+                    "current_page": page,
+                },
+                "data": db_models
+            }
 
         if self.use_async:
             return async_route
