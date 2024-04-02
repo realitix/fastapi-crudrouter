@@ -106,7 +106,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
 
         return metadata[0]
 
-    def _get_all(self, *args: Any, **kwargs: Any) -> CALLABLE_LIST:
+    def _get_all(self, *args: Any, **kwargs: Any) -> GetAllResult:
         def route(
             db: Session = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
