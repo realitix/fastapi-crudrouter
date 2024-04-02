@@ -3,6 +3,7 @@ from typing import Any, Callable, Generic, List, Optional, Type, Union
 
 from fastapi import APIRouter, HTTPException
 from fastapi.types import DecoratedCallable
+from pydantic import BaseModel
 
 from ._types import T, DEPENDENCIES
 from ._utils import pagination_factory, schema_factory
@@ -53,12 +54,22 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
 
         super().__init__(prefix=prefix, tags=tags, **kwargs)
 
+        class PaginationResult(BaseModel):
+            total_records: int
+            total_pages: int
+            current_page: int
+
+        class GetAllResponseModel(BaseModel):
+            pagination: PaginationResult
+            data: list[self.schema]
+
+
         if get_all_route:
             self._add_api_route(
                 "",
                 self._get_all(),
                 methods=["GET"],
-                response_model=Optional[List[self.schema]],  # type: ignore
+                response_model=GetAllResponseModel,  # type: ignore
                 summary="Get All",
                 dependencies=get_all_route,
             )
