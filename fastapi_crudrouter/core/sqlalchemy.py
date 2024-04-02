@@ -161,7 +161,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 (model,) = row
                 db_models.append(model)
 
-            count = (await db.execute(query_count)).first()
+            count, _ = (await db.execute(query_count)).first()
             from loguru import logger
             logger.error(count)
 
