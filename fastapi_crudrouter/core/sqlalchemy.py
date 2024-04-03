@@ -12,7 +12,7 @@ try:
     from sqlalchemy.ext.declarative import DeclarativeMeta as Model
     from sqlalchemy.exc import IntegrityError, NoResultFound
     from sqlalchemy import __version__ as sqlalchemy_version
-    from sqlalchemy import func
+    from sqlalchemy import func, desc
 
     if sqlalchemy_version >= "1.4":
         from sqlalchemy.future import select
@@ -149,7 +149,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
 
             res = await db.execute(
                 query
-                .order_by(getattr(self.db_model, self._pk))
+                .order_by(desc(getattr(self.db_model, self._pk)))
                 .limit(limit)
                 .offset(skip)
             )
