@@ -22,6 +22,7 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
         schema: Type[T],
         create_schema: Optional[Type[T]] = None,
         update_schema: Optional[Type[T]] = None,
+        get_all_schema: Optional[Type[T]] = None,
         prefix: Optional[str] = None,
         tags: Optional[List[str]] = None,
         paginate: Optional[int] = None,
@@ -47,6 +48,11 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
             if update_schema
             else schema_factory(self.schema, pk_field_name=self._pk, name="Update")
         )
+        self.get_all_schema = (
+            get_all_schema
+            if get_all_schema
+            else schema
+        )
 
         prefix = str(prefix if prefix else self.schema.__name__).lower()
         prefix = self._base_path + prefix.strip("/")
@@ -61,7 +67,7 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
 
         class GetAllResponseModel(BaseModel):
             pagination: PaginationResult
-            data: list[self.schema]
+            data: list[self.get_all_schema]
 
 
         if get_all_route:

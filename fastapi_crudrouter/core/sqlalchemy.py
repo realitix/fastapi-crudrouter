@@ -48,6 +48,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         db: SessionGenerator,
         create_schema: Optional[Type[SCHEMA]] = None,
         update_schema: Optional[Type[SCHEMA]] = None,
+        get_all_schema: Optional[Type[SCHEMA]] = None,
         filter_schema: Optional[Type[SCHEMA]] = None,
         prefix: Optional[str] = None,
         tags: Optional[List[str]] = None,
@@ -82,6 +83,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             schema=schema,
             create_schema=create_schema,
             update_schema=update_schema,
+            get_all_schema=get_all_schema,
             prefix=prefix or db_model.__tablename__,
             tags=tags,
             paginate=paginate,
@@ -133,6 +135,19 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             else:
                 skip = 0
 
+            # select based on model fields
+            base_class_fields = []
+            join_fields = {}
+            for field, annotation in self.get_all_schema.__fields__.items():
+                if not annotation.metadata:
+                    base_class_fields.append(getattr(self.db_model, field))
+                else:
+                    join_fields[field] = annotation.metadata[0]
+
+            query = select(*base_class_fields)
+            for label, attribute in join_fields.items():
+                query = query.add_columns(attribute.label(label)).join(attribute.class_)
+
             def query_where(query_src: Any) -> Any:
                 if filters:
                     for k, v in filters:
@@ -144,7 +159,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                                 query_src = query_src.join(join_attr.class_).where(join_attr == v)
                 return query_src
 
-            query = query_where(select(self.db_model))
+            query = query_where(query)
             query_count = query_where(select(func.count()).select_from(self.db_model))
 
             res = await db.execute(
@@ -158,7 +173,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             model: Model
             db_models: List[Model] = []
             for row in res:
-                (model,) = row
+                model = self.get_all_schema(**row._asdict())
                 db_models.append(model)
 
             (count,) = (await db.execute(query_count)).first()
