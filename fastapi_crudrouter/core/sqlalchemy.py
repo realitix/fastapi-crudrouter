@@ -1,4 +1,5 @@
 from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints, TypedDict
+from typing import get_origin
 
 from fastapi import Depends, HTTPException
 
@@ -138,15 +139,27 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             # select based on model fields
             base_class_fields = []
             join_fields = {}
+            join_list_fields = {}
             for field, annotation in self.get_all_schema.__fields__.items():
                 if not annotation.metadata:
                     base_class_fields.append(getattr(self.db_model, field))
                 else:
-                    join_fields[field] = annotation.metadata[0]
+                    attribute = annotation.metadata[0]
+                    if get_origin(annotation.annotation) is list:
+                        foreign_key = attribute[1]
+                        join_list_fields[field] = (attribute[0], foreign_key)
+                    else:
+                        join_fields[field] = attribute
 
             query = select(*base_class_fields)
+            already_joined = set()
             for label, attribute in join_fields.items():
-                query = query.add_columns(attribute.label(label)).join(attribute.class_)
+                query = query.add_columns(attribute.label(label))
+                if attribute.class_ not in already_joined:
+                    query.join(
+                        attribute.class_,
+                    )
+                    already_joined.add(attribute.class_)
 
             def query_where(query_src: Any) -> Any:
                 if filters:
@@ -173,7 +186,11 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             model: Model
             db_models: List[Model] = []
             for row in res:
-                model = self.get_all_schema(**row._asdict())
+                subdata = {}
+                for field, (attribute, foreign_key) in join_list_fields.items():
+                    r = (await db.execute(select(attribute).where(foreign_key==row.id))).all()
+                    subdata[field] = [x for (x,) in r]
+                model = self.get_all_schema(**row._asdict(), **subdata)
                 db_models.append(model)
 
             (count,) = (await db.execute(query_count)).first()
