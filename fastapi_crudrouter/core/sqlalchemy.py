@@ -154,12 +154,12 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             query = select(*base_class_fields)
             already_joined = set()
             for label, attribute in join_fields.items():
-                query = query.add_columns(attribute.label(label))
                 if attribute.class_ not in already_joined:
-                    query.join(
-                        attribute.class_,
+                    query = query.join(
+                        attribute.class_
                     )
                     already_joined.add(attribute.class_)
+                query = query.add_columns(attribute.label(label))
 
             def query_where(query_src: Any) -> Any:
                 if filters:
@@ -172,7 +172,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                                 query_src = query_src.join(join_attr.class_).where(join_attr == v)
                 return query_src
 
-            query = query_where(query)
+            query = query_where(query).select_from(self.db_model)
             query_count = query_where(select(func.count()).select_from(self.db_model))
 
             res = await db.execute(
