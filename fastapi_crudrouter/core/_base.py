@@ -27,6 +27,7 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
         tags: Optional[List[str]] = None,
         paginate: Optional[int] = None,
         get_all_route: Union[bool, DEPENDENCIES] = True,
+        get_all_options_route: Union[bool, DEPENDENCIES] = True,
         get_one_route: Union[bool, DEPENDENCIES] = True,
         create_route: Union[bool, DEPENDENCIES] = True,
         update_route: Union[bool, DEPENDENCIES] = True,
@@ -69,7 +70,6 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
             pagination: PaginationResult
             data: list[self.get_all_schema]
 
-
         if get_all_route:
             self._add_api_route(
                 "",
@@ -78,6 +78,16 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
                 response_model=GetAllResponseModel,  # type: ignore
                 summary="Get All",
                 dependencies=get_all_route,
+            )
+
+        if get_all_options_route:
+            self._add_api_route(
+                "",
+                self._get_all_options,
+                methods=["OPTIONS"],
+                response_model=dict[str, Any],  # type: ignore
+                summary="Get All Schema",
+                dependencies=get_all_options_route,
             )
 
         if create_route:
@@ -197,6 +207,9 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
     @abstractmethod
     def _get_all(self, *args: Any, **kwargs: Any) -> Callable[..., Any]:
         raise NotImplementedError
+
+    def _get_all_options(self) -> dict[str, Any]:
+        return self.get_all_schema.model_json_schema(ref_template="{model}", mode="serialization")
 
     @abstractmethod
     def _get_one(self, *args: Any, **kwargs: Any) -> Callable[..., Any]:

@@ -55,6 +55,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         tags: Optional[List[str]] = None,
         paginate: Optional[int] = None,
         get_all_route: Union[bool, DEPENDENCIES] = True,
+        get_all_options_route: Union[bool, DEPENDENCIES] = True,
         get_one_route: Union[bool, DEPENDENCIES] = True,
         create_route: Union[bool, DEPENDENCIES] = True,
         update_route: Union[bool, DEPENDENCIES] = True,
@@ -89,6 +90,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             tags=tags,
             paginate=paginate,
             get_all_route=get_all_route,
+            get_all_options_route=get_all_options_route,
             get_one_route=get_one_route,
             create_route=create_route,
             update_route=update_route,
@@ -108,6 +110,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             return None
 
         return metadata[0]
+
 
     def _get_all(self, *args: Any, **kwargs: Any) -> GetAllResult:
         def route(
