@@ -1,3 +1,4 @@
+import math
 from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints, TypedDict
 from typing import get_origin
 
@@ -200,7 +201,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             return {
                 "pagination": {
                     "total_records": count,
-                    "total_pages": count / limit if limit else 1,
+                    "total_pages": math.ceil(count / limit) if limit else 1,
                     "current_page": page,
                 },
                 "data": db_models
