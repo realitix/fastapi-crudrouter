@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic, List, Optional, Type, Union
+from typing import Any, Callable, Generic, List, Optional, Type, Union, cast
 
 from fastapi import APIRouter, HTTPException
 from fastapi.types import DecoratedCallable
@@ -69,7 +69,7 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
 
         class GetAllResponseModel(BaseModel):
             pagination: PaginationResult
-            data: list[self.get_all_schema]
+            data: list[cast(BaseModel, self.get_all_schema)]
 
         if get_all_route:
             self._add_api_route(
