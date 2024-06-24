@@ -13,6 +13,7 @@ NOT_FOUND = HTTPException(404, "Item not found")
 
 class CRUDGenerator(Generic[T], APIRouter, ABC):
     schema: Type[T]
+    get_all_schema: Type[T]
     create_schema: Type[T]
     update_schema: Type[T]
     _base_path: str = "/"
