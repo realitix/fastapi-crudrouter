@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic, List, Optional, Type, Union, cast
+from typing import Any, Callable, Generic, List, Optional, Type, Union, cast, TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 from fastapi.types import DecoratedCallable
@@ -67,9 +67,15 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
             total_pages: int
             current_page: int
 
-        class GetAllResponseModel(BaseModel):
-            pagination: PaginationResult
-            data: list[cast(BaseModel, self.get_all_schema)]
+        # fix a mypy recursive error
+        if TYPE_CHECKING:
+            class GetAllResponseModel(BaseModel):
+                pagination: PaginationResult
+                data: list[BaseModel]
+        else:
+            class GetAllResponseModel(BaseModel):
+                pagination: PaginationResult
+                data: list[self.get_all_schema]
 
         if get_all_route:
             self._add_api_route(
@@ -101,15 +107,18 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
                 dependencies=create_route,
             )
 
-        if delete_all_route:
-            self._add_api_route(
-                "",
-                self._delete_all(),
-                methods=["DELETE"],
-                response_model=Optional[List[self.schema]],  # type: ignore
-                summary="Delete All",
-                dependencies=delete_all_route,
-            )
+        if TYPE_CHECKING:
+            pass
+        else:
+            if delete_all_route:
+                self._add_api_route(
+                    "",
+                    self._delete_all(),
+                    methods=["DELETE"],
+                    response_model=Optional[List[self.schema]],  # type: ignore
+                    summary="Delete All",
+                    dependencies=delete_all_route,
+                )
 
         if get_one_route:
             self._add_api_route(
