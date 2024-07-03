@@ -47,7 +47,7 @@ def schema_factory(
         }
 
     name = schema_cls.__name__ + name
-    schema: Type[T] = create_model(__model_name=name, **fields)  # type: ignore
+    schema: Type[T] = create_model(name, **fields)  # type: ignore
     return schema
 
 
