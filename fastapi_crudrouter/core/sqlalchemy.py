@@ -100,7 +100,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             **kwargs
         )
 
-    def _get_join_where(self, filter_key: str) -> Any:
+    def _get_filter_metadata(self, filter_key: str) -> Any:
         if not self.filter_schema:
             return None
         model_fields = self.filter_schema.model_fields
@@ -169,11 +169,13 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 if filters:
                     for k, v in filters:
                         if v is not None:
-                            join_attr = self._get_join_where(k)
-                            if not join_attr:
-                                query_src = query_src.where(getattr(self.db_model, k) == v)
+                            metadata = self._get_filter_metadata(k)
+                            if callable(metadata):
+                                query_src = metadata(query_src, v)
+                            elif metadata:
+                                query_src = query_src.join(metadata.class_).where(metadata == v)
                             else:
-                                query_src = query_src.join(join_attr.class_).where(join_attr == v)
+                                query_src = query_src.where(getattr(self.db_model, k) == v)
                 return query_src
 
             query = query_where(query).select_from(self.db_model)
