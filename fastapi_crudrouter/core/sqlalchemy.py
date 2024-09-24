@@ -9,9 +9,9 @@ from ._types import DEPENDENCIES, PAGINATION, PYDANTIC_SCHEMA as SCHEMA
 import inspect
 
 try:
-    from sqlalchemy.orm import Session
+    from sqlalchemy.orm import DeclarativeBase, Session
     from sqlalchemy.ext.asyncio import AsyncSession
-    from sqlalchemy.ext.declarative import DeclarativeMeta as Model
+    from sqlalchemy.ext.declarative import DeclarativeMeta
     from sqlalchemy.exc import IntegrityError, NoResultFound
     from sqlalchemy import __version__ as sqlalchemy_version
     from sqlalchemy import func, desc
@@ -24,6 +24,7 @@ except ImportError:
     IntegrityError = None
     sqlalchemy_installed = False
 else:
+    Model = Union[DeclarativeMeta, DeclarativeBase]
     sqlalchemy_installed = True
     SessionGenerator: TypeAlias = Callable[..., Generator[Session, Any, None]] | Callable[..., AsyncGenerator[AsyncSession, None]]
 
