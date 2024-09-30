@@ -1,6 +1,6 @@
 import math
 from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints, TypedDict
-from typing import get_origin
+from typing import get_origin, get_args
 
 from fastapi import Depends, HTTPException
 
@@ -151,8 +151,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 else:
                     attribute = annotation.metadata[0]
                     if get_origin(annotation.annotation) is list:
+                        list_args = get_args(annotation.annotation)
+                        read_cls = list_args[0]
                         foreign_key = attribute[1]
-                        join_list_fields[field] = (attribute[0], foreign_key)
+                        join_list_fields[field] = (attribute[0], foreign_key, read_cls)
                     else:
                         join_fields[field] = attribute
 
@@ -194,9 +196,11 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             db_models: List[Model] = []
             for row in res:
                 subdata = {}
-                for field, (attribute, foreign_key) in join_list_fields.items():
-                    r = (await db.execute(select(attribute).where(foreign_key==row.id))).all()
-                    subdata[field] = [x for (x,) in r]
+                for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
+                    subres = (await db.execute(select(*attribute.__table__.columns).where(foreign_key==row.id))).all()
+                    for subrow in subres:
+                        subdata.setdefault(field, []).append(read_cls(**subrow._asdict()))
+
                 model = self.get_all_schema(**row._asdict(), **subdata)
                 db_models.append(model)
 
