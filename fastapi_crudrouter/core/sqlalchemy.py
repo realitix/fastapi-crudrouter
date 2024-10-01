@@ -197,9 +197,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             for row in res:
                 subdata = {}
                 for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
+                    subdata[field] = []
                     subres = (await db.execute(select(*attribute.__table__.columns).where(foreign_key==row.id))).all()
                     for subrow in subres:
-                        subdata.setdefault(field, []).append(read_cls(**subrow._asdict()))
+                        subdata[field].append(read_cls(**subrow._asdict()))
 
                 model = self.get_all_schema(**row._asdict(), **subdata)
                 db_models.append(model)
