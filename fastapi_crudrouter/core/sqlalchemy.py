@@ -1,6 +1,7 @@
 import math
 from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints, TypedDict
 from typing import get_origin, get_args
+from types import UnionType
 
 from fastapi import Depends, HTTPException
 
@@ -141,6 +142,11 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             else:
                 skip = 0
 
+            def type_can_be_none(type_hint):
+                if get_origin(type_hint) is UnionType:
+                    return type(None) in get_args(type_hint)
+                return False
+
             # select based on model fields
             base_class_fields = []
             join_fields = {}
@@ -156,14 +162,14 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                         foreign_key = attribute[1]
                         join_list_fields[field] = (attribute[0], foreign_key, read_cls)
                     else:
-                        join_fields[field] = attribute
+                        join_fields[field] = (attribute, type_can_be_none(annotation.annotation))
 
             query = select(*base_class_fields)
             already_joined = set()
-            for label, attribute in join_fields.items():
+            for label, (attribute, isouter) in join_fields.items():
                 if attribute.class_ not in already_joined:
                     query = query.join(
-                        attribute.class_
+                        attribute.class_, isouter=isouter,
                     )
                     already_joined.add(attribute.class_)
                 query = query.add_columns(attribute.label(label))
