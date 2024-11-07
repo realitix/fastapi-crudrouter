@@ -188,7 +188,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 return query_src
 
             query = query_where(query).select_from(self.db_model)
-            query_count = query_where(select(func.count()).select_from(self.db_model))
+            query_count = query.with_only_columns(func.count()).select_from(self.db_model)
 
             res = await db.execute(
                 query
