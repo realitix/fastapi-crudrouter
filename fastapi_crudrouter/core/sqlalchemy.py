@@ -190,14 +190,33 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             query = query_where(query).select_from(self.db_model)
             query_count = query.with_only_columns(func.count()).select_from(self.db_model)
 
+            def get_order_by() -> Any:
+                order_by = pagination.get("order_by")
+                if not order_by:
+                    return desc(getattr(self.db_model, self._pk))
+
+                order_by = order_by.split("__")
+                if len(order_by) == 2:
+                    order_by_field, order_by_direction = order_by
+                else:
+                    order_by_field = order_by[0]
+                    order_by_direction = "ASC"
+
+                result = getattr(self.db_model, order_by_field)
+                if order_by_direction == "DESC":
+                    result = desc(result)
+
+                return result
+
             res = await db.execute(
                 query
-                .order_by(desc(getattr(self.db_model, self._pk)))
+                .order_by(get_order_by())
                 .limit(limit)
                 .offset(skip)
             )
             res = res.all()
 
+            # search join field
             model: Model
             db_models: List[Model] = []
             for row in res:
