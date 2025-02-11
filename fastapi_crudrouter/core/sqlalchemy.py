@@ -2,6 +2,8 @@ import math
 from typing import Any, Callable, List, Type, Generator, Optional, Union, AsyncGenerator, TypeAlias, get_type_hints, TypedDict
 from typing import get_origin, get_args
 from types import UnionType
+from pydantic import create_model
+from datetime import datetime, date
 
 from fastapi import Depends, HTTPException
 
@@ -32,6 +34,45 @@ else:
 CALLABLE = Callable[..., Model]
 CALLABLE_LIST = Callable[..., List[Model]]
 
+
+def extract_python_type(field_type: Any) -> Any:
+    origin = get_origin(field_type)
+    if origin is None:
+        return field_type
+
+    args = get_args(field_type)
+    if origin is UnionType and len(args) == 2 and type(None) in args:
+        return next(arg for arg in args if arg is not type(None))
+
+    return origin
+
+
+def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
+    new_fields = {}
+    for field_name, field_info in base_fields.items():
+        field_type = extract_python_type(field_info.annotation)
+        if field_type in (date, datetime):
+            new_fields[f"{field_name}__lte"] = (Optional[field_type], None)
+            new_fields[f"{field_name}__gte"] = (Optional[field_type], None)
+
+        elif field_type is str:
+            new_fields[f"{field_name}__like"] = (Optional[str], None)
+
+    return new_fields
+
+
+def create_filter(base_model: type[SCHEMA]) -> type[SCHEMA]:
+    base_fields = base_model.model_fields
+    dynamic_fields = generate_fields_with_suffixes(base_fields)
+
+    return create_model(
+        base_model.__name__,
+        __base__=base_model,
+        **{
+            name: (annotation, default)
+            for name, (annotation, default) in dynamic_fields.items()
+        },
+    )
 
 class PaginationResult(TypedDict):
     total_records: int
@@ -81,8 +122,8 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             self.use_async = use_async
         self._pk: str = db_model.__table__.primary_key.columns.keys()[0]
         self._pk_type: type = _utils.get_pk_type(schema, self._pk)
-        self.filter_schema = filter_schema
-        self.filter_depends = Depends(filter_schema) if filter_schema else Depends(lambda: None)
+        self.filter_schema = create_filter(filter_schema) if filter_schema else None
+        self.filter_depends = Depends(self.filter_schema) if self.filter_schema else Depends(lambda: None)
 
         super().__init__(
             schema=schema,
@@ -101,6 +142,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             delete_all_route=delete_all_route,
             **kwargs
         )
+
 
     def _get_filter_metadata(self, filter_key: str) -> Any:
         if not self.filter_schema:
@@ -147,11 +189,15 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                     return type(None) in get_args(type_hint)
                 return False
 
+            def remove_operator_fields(fields):
+                r= {k: v for k, v in fields.items() if '__' not in k}
+                return r
+
             # select based on model fields
             base_class_fields = []
             join_fields = {}
             join_list_fields = {}
-            for field, annotation in self.get_all_schema.__fields__.items():
+            for field, annotation in remove_operator_fields(self.get_all_schema.__fields__).items():
                 if not annotation.metadata:
                     base_class_fields.append(getattr(self.db_model, field))
                 else:
@@ -177,7 +223,19 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             def query_where(query_src: Any) -> Any:
                 if filters:
                     for k, v in filters:
-                        if v is not None:
+                        if v is None:
+                            continue
+
+                        # special filter with __gte __lte __like
+                        if '__' in k:
+                            filter_key, filter_op = k.split('__')
+                            if filter_op == 'gte':
+                                query_src = query_src.where(getattr(self.db_model, filter_key) >= v)
+                            elif filter_op == 'lte':
+                                query_src = query_src.where(getattr(self.db_model, filter_key) <= v)
+                            elif filter_op == 'like':
+                                query_src = query_src.where(getattr(self.db_model, filter_key).like(f'%{v}%'))
+                        else:
                             metadata = self._get_filter_metadata(k)
                             if callable(metadata):
                                 query_src = metadata(query_src, v)
