@@ -52,11 +52,18 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
     for field_name, field_info in base_fields.items():
         field_type = extract_python_type(field_info.annotation)
         if field_type in (date, datetime):
-            new_fields[f"{field_name}__lte"] = (Optional[field_type], None)
-            new_fields[f"{field_name}__gte"] = (Optional[field_type], None)
+            lte = f"{field_name}__lte"
+            if lte not in base_fields:
+                new_fields[lte] = (Optional[field_type], None)
+
+            gte = f"{field_name}__gte"
+            if gte not in base_fields:
+                new_fields[gte] = (Optional[field_type], None)
 
         elif field_type is str:
-            new_fields[f"{field_name}__like"] = (Optional[str], None)
+            like = f"{field_name}__like"
+            if like not in base_fields:
+                new_fields[like] = (Optional[str], None)
 
     return new_fields
 
@@ -220,29 +227,33 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                     already_joined.add(attribute.class_)
                 query = query.add_columns(attribute.label(label))
 
+            def special_filter(query_src: Any, k: str, v: Any):
+                # special filter with __gte __lte __like
+                filter_key, filter_op = k.split('__')
+                if filter_op == 'gte':
+                    query_src = query_src.where(getattr(self.db_model, filter_key) >= v)
+                elif filter_op == 'lte':
+                    query_src = query_src.where(getattr(self.db_model, filter_key) <= v)
+                elif filter_op == 'like':
+                    query_src = query_src.where(getattr(self.db_model, filter_key).like(f'%{v}%'))
+                return query_src
+
             def query_where(query_src: Any) -> Any:
                 if filters:
                     for k, v in filters:
                         if v is None:
                             continue
 
-                        # special filter with __gte __lte __like
-                        if '__' in k:
-                            filter_key, filter_op = k.split('__')
-                            if filter_op == 'gte':
-                                query_src = query_src.where(getattr(self.db_model, filter_key) >= v)
-                            elif filter_op == 'lte':
-                                query_src = query_src.where(getattr(self.db_model, filter_key) <= v)
-                            elif filter_op == 'like':
-                                query_src = query_src.where(getattr(self.db_model, filter_key).like(f'%{v}%'))
+                        metadata = self._get_filter_metadata(k)
+
+                        if callable(metadata):
+                            query_src = metadata(query_src, v)
+                        elif metadata:
+                            query_src = query_src.join(metadata.class_).where(metadata == v)
+                        elif '__' in k:
+                            query_src = special_filter(query_src, k, v)
                         else:
-                            metadata = self._get_filter_metadata(k)
-                            if callable(metadata):
-                                query_src = metadata(query_src, v)
-                            elif metadata:
-                                query_src = query_src.join(metadata.class_).where(metadata == v)
-                            else:
-                                query_src = query_src.where(getattr(self.db_model, k) == v)
+                            query_src = query_src.where(getattr(self.db_model, k) == v)
                 return query_src
 
             query = query_where(query).select_from(self.db_model)
@@ -260,7 +271,12 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                     order_by_field = order_by[0]
                     order_by_direction = "ASC"
 
-                result = getattr(self.db_model, order_by_field)
+                try:
+                    result = getattr(self.db_model, order_by_field)
+                except AttributeError:
+                    # TODO: handle case using not existing fields (with metadata like in query_where)
+                    return desc(getattr(self.db_model, self._pk))
+
                 if order_by_direction == "DESC":
                     result = desc(result)
 
