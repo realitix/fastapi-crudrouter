@@ -235,7 +235,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 elif filter_op == 'lte':
                     query_src = query_src.where(getattr(self.db_model, filter_key) <= v)
                 elif filter_op == 'like':
-                    query_src = query_src.where(getattr(self.db_model, filter_key).like(f'%{v}%'))
+                    query_src = query_src.where(getattr(self.db_model, filter_key).ilike(f'%{v}%'))
                 return query_src
 
             def query_where(query_src: Any) -> Any:
