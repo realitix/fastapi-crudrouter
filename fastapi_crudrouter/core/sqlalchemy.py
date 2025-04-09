@@ -163,6 +163,56 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
 
         return metadata[0]
 
+    def get_fields(self, schema) -> Any:
+        def type_can_be_none(type_hint):
+            if get_origin(type_hint) is UnionType:
+                return type(None) in get_args(type_hint)
+            return False
+
+        def remove_operator_fields(fields):
+            r= {k: v for k, v in fields.items() if '__' not in k}
+            return r
+
+        # select based on model fields
+        base_class_fields = []
+        join_fields = {}
+        join_list_fields = {}
+        for field, annotation in remove_operator_fields(schema.__fields__).items():
+            if not annotation.metadata:
+                base_class_fields.append(getattr(self.db_model, field))
+            else:
+                attribute = annotation.metadata[0]
+                if get_origin(annotation.annotation) is list:
+                    list_args = get_args(annotation.annotation)
+                    read_cls = list_args[0]
+                    foreign_key = attribute[1]
+                    join_list_fields[field] = (attribute[0], foreign_key, read_cls)
+                else:
+                    join_fields[field] = (attribute, type_can_be_none(annotation.annotation))
+
+        return base_class_fields, join_fields, join_list_fields
+
+    def compute_query_join(self, query, join_fields) -> Any:
+        already_joined = set()
+        for label, (attribute, isouter) in join_fields.items():
+            if attribute.class_ not in already_joined:
+                query = query.join(
+                    attribute.class_, isouter=isouter,
+                )
+                already_joined.add(attribute.class_)
+            query = query.add_columns(attribute.label(label))
+
+        return query
+
+    async def compute_subdata(self, db: AsyncSession, model_id, join_list_fields: dict) -> Any:
+        subdata = {}
+        for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
+            subdata[field] = []
+            subres = (await db.execute(select(*attribute.__table__.columns).where(foreign_key==model_id))).all()
+            for subrow in subres:
+                subdata[field].append(read_cls(**subrow._asdict()))
+
+        return subdata
 
     def _get_all(self, *args: Any, **kwargs: Any) -> GetAllResult:
         def route(
@@ -191,41 +241,10 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             else:
                 skip = 0
 
-            def type_can_be_none(type_hint):
-                if get_origin(type_hint) is UnionType:
-                    return type(None) in get_args(type_hint)
-                return False
-
-            def remove_operator_fields(fields):
-                r= {k: v for k, v in fields.items() if '__' not in k}
-                return r
-
-            # select based on model fields
-            base_class_fields = []
-            join_fields = {}
-            join_list_fields = {}
-            for field, annotation in remove_operator_fields(self.get_all_schema.__fields__).items():
-                if not annotation.metadata:
-                    base_class_fields.append(getattr(self.db_model, field))
-                else:
-                    attribute = annotation.metadata[0]
-                    if get_origin(annotation.annotation) is list:
-                        list_args = get_args(annotation.annotation)
-                        read_cls = list_args[0]
-                        foreign_key = attribute[1]
-                        join_list_fields[field] = (attribute[0], foreign_key, read_cls)
-                    else:
-                        join_fields[field] = (attribute, type_can_be_none(annotation.annotation))
+            base_class_fields, join_fields, join_list_fields = self.get_fields(self.get_all_schema)
 
             query = select(*base_class_fields)
-            already_joined = set()
-            for label, (attribute, isouter) in join_fields.items():
-                if attribute.class_ not in already_joined:
-                    query = query.join(
-                        attribute.class_, isouter=isouter,
-                    )
-                    already_joined.add(attribute.class_)
-                query = query.add_columns(attribute.label(label))
+            query = self.compute_query_join(query, join_fields)
 
             def special_filter(query_src: Any, k: str, v: Any):
                 # special filter with __gte __lte __like
@@ -294,13 +313,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             model: Model
             db_models: List[Model] = []
             for row in res:
-                subdata = {}
-                for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
-                    subdata[field] = []
-                    subres = (await db.execute(select(*attribute.__table__.columns).where(foreign_key==row.id))).all()
-                    for subrow in subres:
-                        subdata[field].append(read_cls(**subrow._asdict()))
-
+                subdata = await self.compute_subdata(db, row.id, join_list_fields)
                 model = self.get_all_schema(**row._asdict(), **subdata)
                 db_models.append(model)
 
@@ -335,11 +348,14 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         ) -> Model:
             model: Model
             try:
-                (model,) = (
-                    await db.execute(
-                        select(self.db_model).where(self.db_model.id == item_id)
-                    )
-                ).one()
+                base_class_fields, join_fields, join_list_fields = self.get_fields(self.schema)
+                query = select(*base_class_fields)
+                query = self.compute_query_join(query, join_fields)
+                query = query.select_from(self.db_model)
+                query = query.where(self.db_model.id == item_id)
+                row = (await db.execute(query)).one()
+                subdata = await self.compute_subdata(db, row.id, join_list_fields)
+                model = self.schema(**row._asdict(), **subdata)
             except NoResultFound:
                 model = None
 
