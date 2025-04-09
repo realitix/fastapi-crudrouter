@@ -177,6 +177,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         base_class_fields = []
         join_fields = {}
         join_list_fields = {}
+        post_compute_fields = {}
         for field, annotation in remove_operator_fields(schema.__fields__).items():
             if not annotation.metadata:
                 base_class_fields.append(getattr(self.db_model, field))
@@ -187,10 +188,12 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                     read_cls = list_args[0]
                     foreign_key = attribute[1]
                     join_list_fields[field] = (attribute[0], foreign_key, read_cls)
+                elif callable(attribute):
+                    post_compute_fields[field] = attribute
                 else:
                     join_fields[field] = (attribute, type_can_be_none(annotation.annotation))
 
-        return base_class_fields, join_fields, join_list_fields
+        return base_class_fields, join_fields, join_list_fields, post_compute_fields
 
     def compute_query_join(self, query, join_fields) -> Any:
         already_joined = set()
@@ -213,6 +216,12 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 subdata[field].append(read_cls(**subrow._asdict()))
 
         return subdata
+
+    def compute_post_fields(self, row, post_compute_fields) -> Any:
+        post_fields = {}
+        for field, fun in post_compute_fields.items():
+            post_fields[field] = fun(row)
+        return post_fields
 
     def _get_all(self, *args: Any, **kwargs: Any) -> GetAllResult:
         def route(
@@ -241,7 +250,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             else:
                 skip = 0
 
-            base_class_fields, join_fields, join_list_fields = self.get_fields(self.get_all_schema)
+            base_class_fields, join_fields, join_list_fields, post_compute_fields = self.get_fields(self.get_all_schema)
 
             query = select(*base_class_fields)
             query = self.compute_query_join(query, join_fields)
@@ -314,7 +323,8 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             db_models: List[Model] = []
             for row in res:
                 subdata = await self.compute_subdata(db, row.id, join_list_fields)
-                model = self.get_all_schema(**row._asdict(), **subdata)
+                post_fields = self.compute_post_fields(row._asdict(), post_compute_fields)
+                model = self.get_all_schema(**row._asdict(), **subdata, **post_fields)
                 db_models.append(model)
 
             (count,) = (await db.execute(query_count)).first()
@@ -348,14 +358,15 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         ) -> Model:
             model: Model
             try:
-                base_class_fields, join_fields, join_list_fields = self.get_fields(self.schema)
+                base_class_fields, join_fields, join_list_fields, post_compute_fields = self.get_fields(self.schema)
                 query = select(*base_class_fields)
                 query = self.compute_query_join(query, join_fields)
                 query = query.select_from(self.db_model)
                 query = query.where(self.db_model.id == item_id)
                 row = (await db.execute(query)).one()
                 subdata = await self.compute_subdata(db, row.id, join_list_fields)
-                model = self.schema(**row._asdict(), **subdata)
+                post_fields = self.compute_post_fields(row._asdict(), post_compute_fields)
+                model = self.schema(**row._asdict(), **subdata, **post_fields)
             except NoResultFound:
                 model = None
 
