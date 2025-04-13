@@ -18,6 +18,7 @@ try:
     from sqlalchemy.exc import IntegrityError, NoResultFound
     from sqlalchemy import __version__ as sqlalchemy_version
     from sqlalchemy import func, desc
+    from sqlalchemy import inspect as sa_inspect
 
     if sqlalchemy_version >= "1.4":
         from sqlalchemy.future import select
@@ -80,6 +81,23 @@ def create_filter(base_model: type[SCHEMA]) -> type[SCHEMA]:
             for name, (annotation, default) in dynamic_fields.items()
         },
     )
+
+
+def find_join_condition(from_cls, target_attr):
+    target_cls = target_attr.class_
+    target_column = target_attr
+
+    from_mapper = sa_inspect(from_cls)
+    target_mapper = sa_inspect(target_cls)
+    target_table_name = target_mapper.local_table.name
+
+    for fk_col in from_mapper.columns:
+        for fk in fk_col.foreign_keys:
+            referred_col = fk.column
+            if referred_col.table.name == target_table_name:
+                return fk_col == referred_col
+    return None
+
 
 class PaginationResult(TypedDict):
     total_records: int
@@ -199,8 +217,12 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
         already_joined = set()
         for label, (attribute, isouter) in join_fields.items():
             if attribute.class_ not in already_joined:
+                args = [attribute.class_]
+                join_condition = find_join_condition(self.db_model, attribute)
+                if join_condition is not None:
+                    args.append(join_condition)
                 query = query.join(
-                    attribute.class_, isouter=isouter,
+                    *args, isouter=isouter
                 )
                 already_joined.add(attribute.class_)
             query = query.add_columns(attribute.label(label))
