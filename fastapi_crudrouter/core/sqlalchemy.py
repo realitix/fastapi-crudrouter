@@ -462,16 +462,17 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
             db: AsyncSession = Depends(self.db_func),
         ) -> Model:
             try:
-                db_model: Model = await self._get_one()(item_id, db)
+                db_model: Model = await db.get(self.db_model, item_id)
+                hydrating_model: Model = self.db_model(**model.dict())
 
                 for key, value in model.dict(exclude={self._pk}).items():
                     if hasattr(db_model, key):
-                        setattr(db_model, key, value)
+                        setattr(db_model, key, getattr(hydrating_model, key))
 
                 await db.commit()
                 await db.refresh(db_model)
 
-                return db_model
+                return await self._get_one()(item_id=db_model.id, db=db)
             except IntegrityError as e:
                 await db.rollback()
                 self._raise(e)
