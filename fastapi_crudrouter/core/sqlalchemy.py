@@ -425,7 +425,7 @@ class SQLAlchemyCRUDRouter(CRUDGenerator[SCHEMA]):
                 db.add(db_model)
                 await db.commit()
                 await db.refresh(db_model)
-                return db_model
+                return await self._get_one()(item_id=db_model.id, db=db)
             except IntegrityError:
                 await db.rollback()
                 raise HTTPException(422, "Key already exists") from None
