@@ -34,6 +34,7 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
         update_route: Union[bool, DEPENDENCIES] = True,
         delete_one_route: Union[bool, DEPENDENCIES] = True,
         delete_all_route: Union[bool, DEPENDENCIES] = True,
+        raise_callback: Callable[[Exception], None] | None = None,
         **kwargs: Any,
     ) -> None:
 
@@ -55,6 +56,7 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
             if get_all_schema
             else schema
         )
+        self.raise_callback = raise_callback
 
         prefix = str(prefix if prefix else self.schema.__name__).lower()
         prefix = self._base_path + prefix.strip("/")
@@ -242,7 +244,9 @@ class CRUDGenerator(Generic[T], APIRouter, ABC):
         raise NotImplementedError
 
     def _raise(self, e: Exception, status_code: int = 422) -> HTTPException:
-        raise HTTPException(422, ", ".join(e.args)) from e
+        if self.raise_callback:
+            self.raise_callback(e)
+        raise HTTPException(status_code, ", ".join(e.args)) from e
 
     @staticmethod
     def get_routes() -> List[str]:
