@@ -10,10 +10,12 @@ from typing import (
     Type,
     TypeAlias,
     TypedDict,
+    TypeVar,
     Union,
     get_args,
     get_origin,
 )
+from typing_extensions import Protocol
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
@@ -30,7 +32,9 @@ try:
 except ImportError as e:
     raise ImportError("SQLAlchemy must be installed to use fastapi-crudrouter") from e
 
-Model = Union[DeclarativeMeta, DeclarativeBase]
+# Type for SQLAlchemy model classes
+# Using Type[DeclarativeBase] to accept any class that inherits from DeclarativeBase
+Model = Union[Type[DeclarativeBase], DeclarativeMeta]
 SessionGenerator: TypeAlias = Callable[..., AsyncGenerator[AsyncSession, None]]
 
 DEPENDENCIES = Optional[List[Depends]]
