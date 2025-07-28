@@ -52,7 +52,7 @@ def pagination_factory(max_limit: Optional[int] = None):
     """Create pagination dependency"""
     from pydantic import validator
 
-    def paginate(page: int = 1, skip: int = 0, limit: Optional[int] = max_limit) -> PAGINATION:
+    def paginate(page: int = 1, skip: int = 0, limit: Optional[int] = max_limit, order_by: Optional[str] = None) -> PAGINATION:
         # Validate skip parameter
         if skip < 0:
             raise HTTPException(422, "skip must be >= 0")
@@ -67,7 +67,7 @@ def pagination_factory(max_limit: Optional[int] = None):
         # If skip is provided, convert to page-based pagination
         if skip > 0 and limit:
             page = (skip // limit) + 1
-        return {"page": page, "limit": limit, "skip": skip}
+        return {"page": page, "limit": limit, "skip": skip, "order_by": order_by}
 
     return Depends(paginate)
 
