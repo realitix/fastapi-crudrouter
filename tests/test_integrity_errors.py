@@ -31,9 +31,9 @@ def test_integrity_error_update(integrity_errors_client):
     test_router.test_post(*args, potato2, expected_length=2)
 
     potato2["color"] = potato1["color"]
-    res = client.put(f'{POTATO_URL}/{potato2["id"]}', json=potato2)
+    res = client.put(f"{POTATO_URL}/{potato2['id']}", json=potato2)
     assert res.status_code == 422, res.json()
 
     potato2["color"] = "green"
-    res = client.put(f'{POTATO_URL}/{potato2["id"]}', json=potato2)
+    res = client.put(f"{POTATO_URL}/{potato2['id']}", json=potato2)
     assert res.status_code == 200, res.json()

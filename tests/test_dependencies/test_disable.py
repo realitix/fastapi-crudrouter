@@ -1,16 +1,14 @@
 import pytest
 
-from fastapi_crudrouter.core import CRUDGenerator
-
-from tests.implementations import implementations
-from tests.conftest import yield_test_client, label_func
+from fastapi_crudrouter import CRUDRouter
 from tests import test_router
-
+from tests.conftest import label_func, yield_test_client
+from tests.implementations import implementations
 
 URLS = ["/potato", "/carrot"]
 AUTH = {"Authorization": "Bearer my_token"}
-KEY_WORDS = {f"{r}_route" for r in CRUDGenerator.get_routes()}
-DISABLE_KWARGS = {k: False for k in KEY_WORDS}
+KEY_WORDS = {f"{r}_route" for r in CRUDRouter.get_routes()}
+DISABLE_KWARGS = dict.fromkeys(KEY_WORDS, False)
 
 
 @pytest.fixture(params=implementations, ids=label_func, scope="class")

@@ -22,7 +22,7 @@ setup(
     description="A dynamic FastAPI router that automatically creates CRUD routes for your models",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    install_requires=["fastapi"],
+    install_requires=["fastapi", "sqlalchemy[asyncio]>=1.4.0"],
     python_requires=">=3.7",
     include_package_data=True,
     zip_safe=False,

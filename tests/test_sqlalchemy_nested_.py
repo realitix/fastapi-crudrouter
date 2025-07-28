@@ -25,8 +25,8 @@ class ParentCreate(BaseModel):
     pass
 
 
-def create_app():
-    app, engine, Base, session = _setup_base_app()
+async def create_app():
+    app, engine, Base, session = await _setup_base_app()
 
     class Child(Base):
         __tablename__ = "child"
@@ -39,7 +39,8 @@ def create_app():
 
         children = relationship(Child, backref="parent", lazy="joined")
 
-    Base.metadata.create_all(bind=engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     parent_router = SQLAlchemyCRUDRouter(
         schema=ParentSchema,
         create_schema=ParentCreate,
@@ -56,13 +57,14 @@ def create_app():
     return app
 
 
-def test_nested_models():
-    client = TestClient(create_app())
+async def test_nested_models():
+    app = await create_app()
+    client = TestClient(app)
 
-    parent = test_router.test_post(client, PARENT_URL, dict())
+    parent = test_router.test_post(client, PARENT_URL, {})
     test_router.test_post(client, CHILD_URL, dict(id=0, parent_id=parent["id"]))
 
-    res = client.get(f'{PARENT_URL}/{parent["id"]}')
+    res = client.get(f"{PARENT_URL}/{parent['id']}")
     assert res.status_code == 200, res.json()
 
     data = res.json()

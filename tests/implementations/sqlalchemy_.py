@@ -1,55 +1,59 @@
 from fastapi import FastAPI
 from sqlalchemy import Column, Float, Integer, String
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy_utils import create_database, database_exists, drop_database
 
-from fastapi_crudrouter import SQLAlchemyCRUDRouter
+from fastapi_crudrouter import CRUDRouter
 from tests import (
+    CUSTOM_TAGS,
+    PAGINATION_SIZE,
     Carrot,
     CarrotCreate,
     CarrotUpdate,
     CustomPotato,
-    PAGINATION_SIZE,
     Potato,
     PotatoType,
-    CUSTOM_TAGS,
-    config,
 )
 
 DSN_LIST = [
-    "sqlite:///./test.db?check_same_thread=false",
-    # config.MSSQL_URI,
-    config.POSTGRES_URI,
+    "sqlite+aiosqlite:///./test_async.db",
+    # config.POSTGRES_ASYNC_URI,  # Uncomment if you have async PostgreSQL setup
 ]
 
 
-def _setup_base_app(db_uri: str = DSN_LIST[0]):
-    if database_exists(db_uri):
-        drop_database(db_uri)
+async def _setup_base_app(db_uri: str = DSN_LIST[0]):
+    # Convert async URI to sync for database creation
+    sync_uri = db_uri.replace("+aiosqlite", "").replace("sqlite:///", "sqlite:///")
 
-    create_database(db_uri)
+    if database_exists(sync_uri):
+        drop_database(sync_uri)
+    create_database(sync_uri)
 
     app = FastAPI()
 
-    engine = create_engine(db_uri)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    engine = create_async_engine(db_uri)
+    AsyncSessionLocal = async_sessionmaker(
+        autocommit=False, autoflush=False, bind=engine
+    )
     Base = declarative_base()
 
-    def session():
-        session = SessionLocal()
-        try:
-            yield session
-            session.commit()
-        finally:
-            session.close()
+    async def get_session():
+        async with AsyncSessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
 
-    return app, engine, Base, session
+    return app, engine, Base, get_session
 
 
-def sqlalchemy_implementation(db_uri: str):
-    app, engine, Base, session = _setup_base_app(db_uri)
+async def sqlalchemy_async_implementation(db_uri: str):
+    app, engine, Base, get_session = await _setup_base_app(db_uri)
 
     class PotatoModel(Base):
         __tablename__ = "potatoes"
@@ -65,19 +69,22 @@ def sqlalchemy_implementation(db_uri: str):
         length = Column(Float)
         color = Column(String)
 
-    Base.metadata.create_all(bind=engine)
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     router_settings = [
         dict(
             schema=Potato,
             db_model=PotatoModel,
-            db=session,
+            db=get_session,
             prefix="potato",
             paginate=PAGINATION_SIZE,
         ),
         dict(
             schema=Carrot,
             db_model=CarrotModel,
-            db=session,
+            db=get_session,
             create_schema=CarrotCreate,
             update_schema=CarrotUpdate,
             prefix="carrot",
@@ -85,12 +92,11 @@ def sqlalchemy_implementation(db_uri: str):
         ),
     ]
 
-    return app, SQLAlchemyCRUDRouter, router_settings
+    return app, CRUDRouter, router_settings
 
 
-# noinspection DuplicatedCode
-def sqlalchemy_implementation_custom_ids():
-    app, engine, Base, session = _setup_base_app()
+async def sqlalchemy_async_implementation_custom_ids():
+    app, engine, Base, get_session = await _setup_base_app()
 
     class PotatoModel(Base):
         __tablename__ = "potatoes"
@@ -100,29 +106,35 @@ def sqlalchemy_implementation_custom_ids():
         color = Column(String)
         type = Column(String)
 
-    Base.metadata.create_all(bind=engine)
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     app.include_router(
-        SQLAlchemyCRUDRouter(schema=CustomPotato, db_model=PotatoModel, db=session)
+        CRUDRouter(schema=CustomPotato, db_model=PotatoModel, db=get_session)
     )
 
     return app
 
 
-def sqlalchemy_implementation_string_pk():
-    app, engine, Base, session = _setup_base_app()
+async def sqlalchemy_async_implementation_string_pk():
+    app, engine, Base, get_session = await _setup_base_app()
 
     class PotatoTypeModel(Base):
         __tablename__ = "potato_type"
         name = Column(String, primary_key=True, index=True)
         origin = Column(String)
 
-    Base.metadata.create_all(bind=engine)
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     app.include_router(
-        SQLAlchemyCRUDRouter(
+        CRUDRouter(
             schema=PotatoType,
             create_schema=PotatoType,
             db_model=PotatoTypeModel,
-            db=session,
+            db=get_session,
             prefix="potato_type",
         )
     )
@@ -130,8 +142,8 @@ def sqlalchemy_implementation_string_pk():
     return app
 
 
-def sqlalchemy_implementation_integrity_errors():
-    app, engine, Base, session = _setup_base_app()
+async def sqlalchemy_async_implementation_integrity_errors():
+    app, engine, Base, get_session = await _setup_base_app()
 
     class PotatoModel(Base):
         __tablename__ = "potatoes"
@@ -147,24 +159,76 @@ def sqlalchemy_implementation_integrity_errors():
         length = Column(Float)
         color = Column(String)
 
-    Base.metadata.create_all(bind=engine)
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     app.include_router(
-        SQLAlchemyCRUDRouter(
+        CRUDRouter(
             schema=Potato,
             db_model=PotatoModel,
-            db=session,
+            db=get_session,
             create_schema=Potato,
             prefix="potatoes",
         )
     )
     app.include_router(
-        SQLAlchemyCRUDRouter(
+        CRUDRouter(
             schema=Carrot,
             db_model=CarrotModel,
-            db=session,
+            db=get_session,
             update_schema=CarrotUpdate,
             prefix="carrots",
         )
     )
 
     return app
+
+
+# Sync wrapper functions for backward compatibility
+def sqlalchemy_implementation(db_uri: str):
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(sqlalchemy_async_implementation(db_uri))
+
+
+def sqlalchemy_implementation_custom_ids():
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(sqlalchemy_async_implementation_custom_ids())
+
+
+def sqlalchemy_implementation_string_pk():
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(sqlalchemy_async_implementation_string_pk())
+
+
+def sqlalchemy_implementation_integrity_errors():
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(sqlalchemy_async_implementation_integrity_errors())

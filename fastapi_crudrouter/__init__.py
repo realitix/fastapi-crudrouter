@@ -1,19 +1,10 @@
+from ._version import __version__  # noqa: F401
 from .core import (
-    DatabasesCRUDRouter,
-    GinoCRUDRouter,
-    MemoryCRUDRouter,
-    OrmarCRUDRouter,
+    CRUDRouter,
     SQLAlchemyCRUDRouter,
-    TortoiseCRUDRouter,
 )
 
-from ._version import __version__  # noqa: F401
-
 __all__ = [
-    "MemoryCRUDRouter",
+    "CRUDRouter",
     "SQLAlchemyCRUDRouter",
-    "DatabasesCRUDRouter",
-    "TortoiseCRUDRouter",
-    "OrmarCRUDRouter",
-    "GinoCRUDRouter",
 ]

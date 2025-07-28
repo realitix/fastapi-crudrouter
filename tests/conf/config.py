@@ -1,7 +1,6 @@
 import os
 import pathlib
 
-
 ENV_FILE_PATH = pathlib.Path(__file__).parent / "dev.env"
 assert ENV_FILE_PATH.exists()
 

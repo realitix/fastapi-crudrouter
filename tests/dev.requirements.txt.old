@@ -1,23 +1,15 @@
 fastapi
 httpx
 
-# Backends
-ormar
-tortoise-orm==0.18.1
-databases
+# SQLAlchemy Backend
+sqlalchemy[asyncio]
 aiosqlite
-sqlalchemy<1.4.0
-sqlalchemy_utils==0.36.8
-gino-starlette==0.1.1
-asyncpg
+sqlalchemy_utils
 
 # Testing
 pytest
-pytest-virtualenv
+pytest-asyncio
 requests
-asynctest
-psycopg2
-pyodbc
 
 # Linting
 flake8
@@ -32,4 +24,4 @@ flake8-functions
 flake8-expression-complexity
 
 # Typing
-mypy==0.910
+mypy>=1.0.0

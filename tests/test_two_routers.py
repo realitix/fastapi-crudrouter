@@ -39,13 +39,13 @@ def test_update(client):
     carrot["color"] = "Red"
     carrot["length"] = 54.0
 
-    res = client.put(f'{CarrotUrl}/{data["id"]}', json=carrot)
+    res = client.put(f"{CarrotUrl}/{data['id']}", json=carrot)
     assert res.status_code == 200
     assert not compare_dict(res.json(), carrot, exclude=["id"])
     assert not compare_dict(res.json(), basic_carrot, exclude=["id"])
     assert compare_dict(res.json(), carrot, exclude=["id", "color"])
 
-    res = client.get(f'{CarrotUrl}/{data["id"]}')
+    res = client.get(f"{CarrotUrl}/{data['id']}")
     assert res.status_code == 200
     assert not compare_dict(res.json(), carrot, exclude=["id"])
     assert not compare_dict(res.json(), basic_carrot, exclude=["id"])

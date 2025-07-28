@@ -1,9 +1,8 @@
-import pytest
 from fastapi import APIRouter
+import pytest
 
-from .implementations import implementations
 from .conftest import yield_test_client
-
+from .implementations import implementations
 
 URLs = ["/potato", "/carrot"]
 PARAMS = [-1, 0, 1, 14, "ten"]

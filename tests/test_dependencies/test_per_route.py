@@ -1,5 +1,5 @@
-import pytest
 from fastapi import Depends, HTTPException
+import pytest
 
 from tests.conftest import yield_test_client
 from tests.implementations import implementations

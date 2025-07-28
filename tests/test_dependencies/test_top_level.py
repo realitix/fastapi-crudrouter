@@ -1,10 +1,9 @@
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-
 import pytest
 
-from tests.implementations import implementations
 from tests.conftest import yield_test_client
+from tests.implementations import implementations
 
 URLS = ["/potato", "/carrot"]
 AUTH = {"Authorization": "Bearer my_token"}
