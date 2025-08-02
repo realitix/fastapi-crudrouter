@@ -182,7 +182,7 @@ class CRUDRouter(APIRouter):
         filter_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
         prefix: Optional[str] = None,
         tags: Optional[List[str]] = None,
-        paginate: Optional[int] = 20,
+        paginate: Optional[int] = None,
         get_all_route: Union[bool, DEPENDENCIES] = True,
         get_all_options_route: Union[bool, DEPENDENCIES] = True,
         get_one_route: Union[bool, DEPENDENCIES] = True,
@@ -260,13 +260,12 @@ class CRUDRouter(APIRouter):
 
             # Add routes
             if get_all_route:
-                # Use list response if pagination is disabled, otherwise use pagination response
-                response_model = list[self.get_all_schema] if paginate is None else GetAllResponseModel
+                # Always use pagination response model
                 self._add_api_route(
                     "",
                     self._get_all(),
                     methods=["GET"],
-                    response_model=response_model,
+                    response_model=GetAllResponseModel,
                     summary="Get All",
                     dependencies=get_all_route,
                 )
@@ -292,13 +291,12 @@ class CRUDRouter(APIRouter):
                 )
 
             if delete_all_route:
-                # Use list response if pagination is disabled, otherwise use pagination response
-                delete_response_model = list[self.get_all_schema] if paginate is None else GetAllResponseModel
+                # Always use pagination response model
                 self._add_api_route(
                     "",
                     self._delete_all(),
                     methods=["DELETE"],
-                    response_model=delete_response_model,
+                    response_model=GetAllResponseModel,
                     summary="Delete All",
                     dependencies=delete_all_route,
                 )
@@ -499,16 +497,16 @@ class CRUDRouter(APIRouter):
     @staticmethod
     def get_routes() -> List[str]:
         """Get list of available routes"""
-        return ["get_all", "create", "delete_all", "get_one", "update", "delete_one"]
+        return ["get_all", "get_all_options", "create", "delete_all", "get_one", "update", "delete_one"]
 
-    def _get_all(self) -> Callable[..., Union[GetAllResult, List[Model]]]:
+    def _get_all(self) -> Callable[..., GetAllResult]:
         """Get all items with pagination and filtering"""
 
         async def route(
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
             filters: self.filter_schema = self.filter_depends,  # type: ignore
-        ) -> Union[GetAllResult, List[Model]]:
+        ) -> GetAllResult:
             page, limit = pagination.get("page", 1), pagination.get("limit")
             # Use skip directly if provided, otherwise calculate from page
             skip = pagination.get("skip", 0)
@@ -609,11 +607,7 @@ class CRUDRouter(APIRouter):
             count_result = (await db.execute(query_count)).first()
             count = count_result[0] if count_result else 0
             
-            # Return simple list if pagination is disabled
-            if self.paginate_limit is None:
-                return db_models
-            
-            # Return pagination format if pagination is enabled
+            # Always return pagination format
             return {
                 "pagination": {
                     "total_records": count,
@@ -706,10 +700,10 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _delete_all(self) -> Callable[..., Union[GetAllResult, List[Model]]]:
+    def _delete_all(self) -> Callable[..., GetAllResult]:
         """Delete all items"""
 
-        async def route(db: AsyncSession = Depends(self.db_func)) -> Union[GetAllResult, List[Model]]:
+        async def route(db: AsyncSession = Depends(self.db_func)) -> GetAllResult:
             await db.execute(text(f"delete from {self.db_model.__tablename__}"))
             await db.commit()
             return await self._get_all()(db=db, pagination={"page": 1, "limit": None}, filters=None)

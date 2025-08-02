@@ -107,13 +107,14 @@ class TestPagination:
 
         res = client.get(CarrotUrl)
         assert res.status_code == 200, res.json()
-        assert len(res.json()) == limit
+        # Now response always has pagination format
+        assert len(res.json()["data"]) == limit
 
         res = client.get(CarrotUrl, params={"limit": limit})
         assert res.status_code == 200, res.json()
-        assert len(res.json()) == limit
+        assert len(res.json()["data"]) == limit
 
         limit = int(limit / 2)
         res = client.get(CarrotUrl, params={"limit": limit})
         assert res.status_code == 200, res.json()
-        assert len(res.json()) == limit
+        assert len(res.json()["data"]) == limit
