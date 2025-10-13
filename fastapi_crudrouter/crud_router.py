@@ -10,12 +10,10 @@ from typing import (
     Type,
     TypeAlias,
     TypedDict,
-    TypeVar,
     Union,
     get_args,
     get_origin,
 )
-from typing_extensions import Protocol
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
@@ -54,18 +52,23 @@ def get_pk_type(schema: Type[BaseModel], pk_field: str) -> type:
 
 def pagination_factory(max_limit: Optional[int] = None):
     """Create pagination dependency"""
-    from pydantic import validator
 
-    def paginate(page: int = 1, skip: int = 0, limit: Optional[int] = max_limit, order_by: Optional[str] = None) -> PAGINATION:
+    def paginate(
+        page: int = 1,
+        skip: int = 0,
+        limit: Optional[int] = max_limit,
+        order_by: Optional[str] = None,
+    ) -> PAGINATION:
         # Validate skip parameter
         if skip < 0:
             raise HTTPException(422, "skip must be >= 0")
-        
+
         # Validate limit parameter
-        if limit is not None:
-            if limit <= 0 or (max_limit and limit > max_limit):
-                raise HTTPException(422, f"limit must be > 0 and <= {max_limit if max_limit else 'max'}")
-            
+        if limit is not None and (limit <= 0 or (max_limit and limit > max_limit)):
+            raise HTTPException(
+                422, f"limit must be > 0 and <= {max_limit if max_limit else 'max'}"
+            )
+
         if limit and max_limit:
             limit = min(limit, max_limit)
         # If skip is provided, convert to page-based pagination
@@ -216,8 +219,53 @@ class CRUDRouter(APIRouter):
         )
         self.get_all_schema = get_all_schema if get_all_schema else schema
 
-        # Set up filtering
-        self.filter_schema = create_filter(filter_schema) if filter_schema else None
+        # Set up filtering with auto-generated fields from schema
+        auto_filter_fields = {}
+
+        # Generate automatic filter fields from schema (all fields become optional filters)
+        for field_name, field_info in self.schema.model_fields.items():
+            # Only include simple fields (exclude joins, custom functions)
+            if not field_info.metadata:
+                # Make field optional for filtering
+                origin = get_origin(field_info.annotation)
+                if origin is UnionType and type(None) in get_args(
+                    field_info.annotation
+                ):
+                    # Already optional
+                    auto_filter_fields[field_name] = (field_info.annotation, None)
+                else:
+                    # Make it optional
+                    auto_filter_fields[field_name] = (
+                        Optional[field_info.annotation],
+                        None,
+                    )
+
+        # Merge with custom filter_schema if provided
+        if filter_schema:
+            # Add only auto fields that are NOT in filter_schema
+            # This preserves custom filter fields with their metadata (callbacks)
+            additional_fields = {
+                name: value
+                for name, value in auto_filter_fields.items()
+                if name not in filter_schema.model_fields
+            }
+
+            # Inherit from filter_schema to preserve metadata (callbacks)
+            base_filter = create_model(
+                f"{self.schema.__name__}Filter",
+                __base__=filter_schema,  # Preserves callbacks and metadata
+                **additional_fields,
+            )
+            self.filter_schema = create_filter(base_filter)
+        # Use only auto-generated fields
+        elif auto_filter_fields:
+            base_filter = create_model(
+                f"{self.schema.__name__}AutoFilter", **auto_filter_fields
+            )
+            self.filter_schema = create_filter(base_filter)
+        else:
+            self.filter_schema = None
+
         self.filter_depends = (
             Depends(self.filter_schema) if self.filter_schema else Depends(lambda: None)
         )
@@ -228,14 +276,19 @@ class CRUDRouter(APIRouter):
         # Check if any routes are enabled (routes can be False or dependencies list)
         def is_route_enabled(route):
             return route is not False and route is not None
-        
-        routes_enabled = any([
-            is_route_enabled(get_all_route), is_route_enabled(get_all_options_route), 
-            is_route_enabled(get_one_route), is_route_enabled(create_route), 
-            is_route_enabled(update_route), is_route_enabled(delete_one_route), 
-            is_route_enabled(delete_all_route)
-        ])
-        
+
+        routes_enabled = any(
+            [
+                is_route_enabled(get_all_route),
+                is_route_enabled(get_all_options_route),
+                is_route_enabled(get_one_route),
+                is_route_enabled(create_route),
+                is_route_enabled(update_route),
+                is_route_enabled(delete_one_route),
+                is_route_enabled(delete_all_route),
+            ]
+        )
+
         # Set up router only if routes are enabled
         if routes_enabled:
             prefix = str(prefix if prefix else db_model.__tablename__).lower()
@@ -243,7 +296,7 @@ class CRUDRouter(APIRouter):
             tags = tags or [prefix.strip("/").capitalize()]
             super().__init__(prefix=prefix, tags=tags, **kwargs)
         else:
-            # Initialize router with empty prefix if no routes are enabled 
+            # Initialize router with empty prefix if no routes are enabled
             super().__init__(prefix="", **kwargs)
 
         # Only set up response models and routes if any routes are enabled
@@ -497,7 +550,15 @@ class CRUDRouter(APIRouter):
     @staticmethod
     def get_routes() -> List[str]:
         """Get list of available routes"""
-        return ["get_all", "get_all_options", "create", "delete_all", "get_one", "update", "delete_one"]
+        return [
+            "get_all",
+            "get_all_options",
+            "create",
+            "delete_all",
+            "get_one",
+            "update",
+            "delete_one",
+        ]
 
     def _get_all(self) -> Callable[..., GetAllResult]:
         """Get all items with pagination and filtering"""
@@ -543,7 +604,7 @@ class CRUDRouter(APIRouter):
                     else:
                         # Skip filtering if filters is not a proper object
                         return query_src
-                        
+
                     for k, v in filter_dict.items():
                         if v is None:
                             continue
@@ -606,7 +667,7 @@ class CRUDRouter(APIRouter):
 
             count_result = (await db.execute(query_count)).first()
             count = count_result[0] if count_result else 0
-            
+
             # Always return pagination format
             return {
                 "pagination": {
@@ -706,7 +767,9 @@ class CRUDRouter(APIRouter):
         async def route(db: AsyncSession = Depends(self.db_func)) -> GetAllResult:
             await db.execute(text(f"delete from {self.db_model.__tablename__}"))
             await db.commit()
-            return await self._get_all()(db=db, pagination={"page": 1, "limit": None}, filters=None)
+            return await self._get_all()(
+                db=db, pagination={"page": 1, "limit": None}, filters=None
+            )
 
         return route
 

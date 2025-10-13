@@ -10,8 +10,8 @@ URL = "/potato"
 
 def extract_data_from_response(response_data):
     """Extract data from response, handling both old list format and new pagination format"""
-    if isinstance(response_data, dict) and 'data' in response_data:
-        return response_data['data']
+    if isinstance(response_data, dict) and "data" in response_data:
+        return response_data["data"]
     return response_data
 
 
@@ -20,7 +20,7 @@ def test_get(client, url: str = URL, params: dict = None, expected_length: int =
     response_data = res.json()
 
     assert res.status_code == 200, response_data
-    
+
     data = extract_data_from_response(response_data)
     assert type(data) == list and len(data) == expected_length
 
