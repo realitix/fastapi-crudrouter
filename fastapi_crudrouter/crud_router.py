@@ -194,6 +194,13 @@ class CRUDRouter(APIRouter):
         delete_one_route: Union[bool, DEPENDENCIES] = True,
         delete_all_route: Union[bool, DEPENDENCIES] = True,
         raise_callback: Optional[Callable[[Exception], None]] = None,
+        current_user_dependency: Optional[Callable] = None,
+        contextual_filter: Optional[Callable] = None,
+        access_checker: Optional[Callable] = None,
+        permission_checker: Optional[Callable] = None,
+        permissions: Optional[dict[str, Any]] = None,
+        create_validator: Optional[Callable] = None,
+        update_validator: Optional[Callable] = None,
         **kwargs: Any,
     ) -> None:
         self.schema = schema
@@ -201,6 +208,24 @@ class CRUDRouter(APIRouter):
         self.db_func = db
         self.raise_callback = raise_callback
         self.paginate_limit = paginate
+
+        # Store security hooks
+        self.access_checker = access_checker
+        self.permission_checker = permission_checker
+        self.permissions = permissions or {}
+        self.create_validator = create_validator
+        self.update_validator = update_validator
+
+        # Wrap hooks in Depends() for FastAPI injection
+        if current_user_dependency:
+            self.current_user_depends = Depends(current_user_dependency)
+        else:
+            self.current_user_depends = None
+
+        if contextual_filter:
+            self.contextual_filter_depends = Depends(contextual_filter)
+        else:
+            self.contextual_filter_depends = Depends(lambda: {})
 
         # Set up primary key
         self._pk: str = db_model.__table__.primary_key.columns.keys()[0]
@@ -567,12 +592,19 @@ class CRUDRouter(APIRouter):
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
             filters: self.filter_schema = self.filter_depends,  # type: ignore
+            contextual_filters: dict = self.contextual_filter_depends,  # type: ignore
+            user: Any = self.current_user_depends,  # type: ignore
         ) -> GetAllResult:
             page, limit = pagination.get("page", 1), pagination.get("limit")
             # Use skip directly if provided, otherwise calculate from page
             skip = pagination.get("skip", 0)
             if skip == 0:
                 skip = (page - 1) * limit if limit else 0
+
+            # Permission check
+            if self.permission_checker and "get_all" in self.permissions:
+                if user and not self.permission_checker(user, self.permissions["get_all"]):
+                    raise HTTPException(403, "No permission to view resources")
 
             base_class_fields, join_fields, join_list_fields, custom_func_fields = (
                 self.get_fields(self.get_all_schema)
@@ -592,9 +624,22 @@ class CRUDRouter(APIRouter):
                     query_src = query_src.where(
                         getattr(self.db_model, filter_key).ilike(f"%{v}%")
                     )
+                elif filter_op == "in":
+                    query_src = query_src.where(getattr(self.db_model, filter_key).in_(v))
                 return query_src
 
             def query_where(query_src: Any) -> Any:
+                # Apply contextual filters first
+                if contextual_filters and isinstance(contextual_filters, dict):
+                    for k, v in contextual_filters.items():
+                        if v is None:
+                            continue
+                        if "__" in k:
+                            query_src = special_filter(query_src, k, v)
+                        else:
+                            query_src = query_src.where(getattr(self.db_model, k) == v)
+
+                # Apply user filters
                 if filters and filters is not None:
                     # Handle case where filters is a Pydantic model
                     if hasattr(filters, "model_dump"):
@@ -686,7 +731,17 @@ class CRUDRouter(APIRouter):
         async def route(
             item_id: self._pk_type,
             db: AsyncSession = Depends(self.db_func),  # type: ignore
+            user: Any = self.current_user_depends,  # type: ignore
         ) -> Model:
+            # Permission check
+            if self.permission_checker and "get_one" in self.permissions:
+                if user and not self.permission_checker(user, self.permissions["get_one"]):
+                    raise HTTPException(403, "No permission to view this resource")
+
+            # Access check
+            if self.access_checker and user:
+                await self.access_checker(item_id, user, db)
+
             try:
                 base_class_fields, join_fields, join_list_fields, custom_func_fields = (
                     self.get_fields(self.schema)
@@ -719,13 +774,23 @@ class CRUDRouter(APIRouter):
         async def route(
             model: self.create_schema,  # type: ignore
             db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,  # type: ignore
         ) -> Model:
+            # Permission check
+            if self.permission_checker and "create" in self.permissions:
+                if user and not self.permission_checker(user, self.permissions["create"]):
+                    raise HTTPException(403, "No permission to create resources")
+
+            # Validation métier
+            if self.create_validator and user:
+                model = await self.create_validator(model, user, db)
+
             try:
                 db_model: Model = self.db_model(**model.model_dump())
                 db.add(db_model)
                 await db.commit()
                 await db.refresh(db_model)
-                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db)
+                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db, user=user)
             except IntegrityError as e:
                 await db.rollback()
                 self._raise(e)
@@ -739,7 +804,21 @@ class CRUDRouter(APIRouter):
             item_id: self._pk_type,  # type: ignore
             model: self.update_schema,  # type: ignore
             db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,  # type: ignore
         ) -> Model:
+            # Permission check
+            if self.permission_checker and "update" in self.permissions:
+                if user and not self.permission_checker(user, self.permissions["update"]):
+                    raise HTTPException(403, "No permission to update resources")
+
+            # Access check
+            if self.access_checker and user:
+                await self.access_checker(item_id, user, db)
+
+            # Validation métier (optionnel)
+            if self.update_validator and user:
+                model = await self.update_validator(model, user, db)
+
             try:
                 db_model: Model = await db.get(self.db_model, item_id)
                 if not db_model:
@@ -754,7 +833,7 @@ class CRUDRouter(APIRouter):
                 await db.commit()
                 await db.refresh(db_model)
 
-                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db)
+                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db, user=user)
             except IntegrityError as e:
                 await db.rollback()
                 self._raise(e)
@@ -779,8 +858,18 @@ class CRUDRouter(APIRouter):
         async def route(
             item_id: self._pk_type,
             db: AsyncSession = Depends(self.db_func),  # type: ignore
+            user: Any = self.current_user_depends,  # type: ignore
         ) -> Model:
-            return_model: Model = await self._get_one()(item_id, db)
+            # Permission check
+            if self.permission_checker and "delete_one" in self.permissions:
+                if user and not self.permission_checker(user, self.permissions["delete_one"]):
+                    raise HTTPException(403, "No permission to delete resources")
+
+            # Access check
+            if self.access_checker and user:
+                await self.access_checker(item_id, user, db)
+
+            return_model: Model = await self._get_one()(item_id, db, user)
             db_model = await db.get(self.db_model, item_id)
             if db_model:
                 await db.delete(db_model)
