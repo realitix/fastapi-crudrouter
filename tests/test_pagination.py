@@ -103,7 +103,7 @@ class TestPagination:
         client.delete(CarrotUrl)
         for i in range(limit):
             res = client.post(url=CarrotUrl, json=basic_carrot)
-            assert res.status_code == 200, res.json()
+            assert res.status_code == 201, res.json()
 
         res = client.get(CarrotUrl)
         assert res.status_code == 200, res.json()

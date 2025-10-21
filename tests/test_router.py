@@ -32,7 +32,7 @@ def test_post(
 ) -> dict:
     model = model or basic_potato
     res = client.post(url, json=model)
-    assert res.status_code == 200, res.json()
+    assert res.status_code == 201, res.json()
 
     response_data = client.get(url).json()
     data = extract_data_from_response(response_data)
@@ -44,7 +44,7 @@ def test_post(
 def test_get_one(client, url: str = URL, model: Dict = None, id_key: str = "id"):
     model = model or basic_potato
     res = client.post(url, json=model)
-    assert res.status_code == 200
+    assert res.status_code == 201
     id_ = res.json()[id_key]
 
     response_data = client.get(url).json()
@@ -63,7 +63,7 @@ def test_update(client, url: str = URL, model: Dict = None, id_key: str = "id"):
     model = model or basic_potato
     res = client.post(url, json=model)
     data = res.json()
-    assert res.status_code == 200
+    assert res.status_code == 201
 
     test_get(client, url, expected_length=1)
 
@@ -85,7 +85,7 @@ def test_delete_one(client, url: str = URL, model: Dict = None, id_key: str = "i
     model = model or basic_potato
     res = client.post(url, json=model)
     created_item = res.json()
-    assert res.status_code == 200
+    assert res.status_code == 201
 
     res = client.get(f"{url}/{created_item[id_key]}")
     assert res.status_code == 200
@@ -96,8 +96,8 @@ def test_delete_one(client, url: str = URL, model: Dict = None, id_key: str = "i
     length_before = len(data)
 
     res = client.delete(f"{url}/{created_item[id_key]}")
-    assert res.status_code == 200
-    assert compare_dict(res.json(), model, exclude=[id_key])
+    assert res.status_code == 204
+    # No content in 204 response, so no assertion on res.json()
 
     res = client.get(url)
     assert res.status_code == 200
@@ -116,10 +116,10 @@ def test_delete_all(
     model2 = model2 or basic_potato
 
     res = client.post(url, json=model)
-    assert res.status_code == 200
+    assert res.status_code == 201
 
     res = client.post(url, json=model2)
-    assert res.status_code == 200
+    assert res.status_code == 201
 
     response_data = client.get(url).json()
     data = extract_data_from_response(response_data)

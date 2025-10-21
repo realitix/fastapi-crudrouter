@@ -365,6 +365,7 @@ class CRUDRouter(APIRouter):
                     methods=["POST"],
                     response_model=schema,
                     summary="Create One",
+                    status_code=201,
                     dependencies=create_route,
                 )
 
@@ -406,8 +407,9 @@ class CRUDRouter(APIRouter):
                     "/{item_id}",
                     self._delete_one(),
                     methods=["DELETE"],
-                    response_model=schema,
+                    response_model=None,
                     summary="Delete One",
+                    status_code=204,
                     dependencies=delete_one_route,
                     error_responses=[NOT_FOUND],
                 )
@@ -824,11 +826,12 @@ class CRUDRouter(APIRouter):
                 if not db_model:
                     raise NOT_FOUND from None
 
-                hydrating_model: Model = self.db_model(**model.model_dump())
+                # Use exclude_unset=True to support partial updates
+                update_data = model.model_dump(exclude_unset=True, exclude={self._pk})
 
-                for key, _value in model.model_dump(exclude={self._pk}).items():
+                for key, value in update_data.items():
                     if hasattr(db_model, key):
-                        setattr(db_model, key, getattr(hydrating_model, key))
+                        setattr(db_model, key, value)
 
                 await db.commit()
                 await db.refresh(db_model)
@@ -852,14 +855,14 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _delete_one(self) -> Callable[..., Model]:
+    def _delete_one(self) -> Callable[..., None]:
         """Delete one item by ID"""
 
         async def route(
             item_id: self._pk_type,
             db: AsyncSession = Depends(self.db_func),  # type: ignore
             user: Any = self.current_user_depends,  # type: ignore
-        ) -> Model:
+        ) -> None:
             # Permission check
             if self.permission_checker and "delete_one" in self.permissions:
                 if user and not self.permission_checker(user, self.permissions["delete_one"]):
@@ -869,12 +872,13 @@ class CRUDRouter(APIRouter):
             if self.access_checker and user:
                 await self.access_checker(item_id, user, db)
 
-            return_model: Model = await self._get_one()(item_id, db, user)
+            # Verify item exists first
             db_model = await db.get(self.db_model, item_id)
-            if db_model:
-                await db.delete(db_model)
-                await db.commit()
+            if not db_model:
+                raise NOT_FOUND from None
 
-            return return_model
+            # Delete the item
+            await db.delete(db_model)
+            await db.commit()
 
         return route

@@ -53,4 +53,4 @@ def test_route_disable_single(delete_all_client):
 
     test_router.test_post(delete_all_client, url)
     assert delete_all_client.put(f"{url}/{1}").status_code == 405
-    assert delete_all_client.delete(f"{url}/{1}").status_code == 200
+    assert delete_all_client.delete(f"{url}/{1}").status_code == 204

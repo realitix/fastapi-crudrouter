@@ -38,13 +38,22 @@ class TestOpenAPISpec:
         schema = self.test_schema_exists(client).json()
         paths = schema["paths"]
 
-        for method in ["get", "post", "delete"]:
-            assert "200" in paths[path][method]["responses"]
+        # GET returns 200
+        assert "200" in paths[path]["get"]["responses"]
+        # POST returns 201
+        assert "201" in paths[path]["post"]["responses"]
+        # DELETE ALL returns 200 (with empty list in pagination format)
+        assert "200" in paths[path]["delete"]["responses"]
 
         assert "422" in paths[path]["post"]["responses"]
 
         item_path = path + "/{item_id}"
-        for method in ["get", "put", "delete"]:
+        # GET and PUT return 200
+        for method in ["get", "put"]:
             assert "200" in paths[item_path][method]["responses"]
             assert "404" in paths[item_path][method]["responses"]
             assert "422" in paths[item_path][method]["responses"]
+
+        # DELETE ONE returns 204 (No Content)
+        assert "204" in paths[item_path]["delete"]["responses"]
+        assert "404" in paths[item_path]["delete"]["responses"]

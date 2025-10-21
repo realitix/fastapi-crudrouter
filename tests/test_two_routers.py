@@ -33,7 +33,7 @@ def test_update(client):
 
     res = client.post(CarrotUrl, json=basic_carrot)
     data = res.json()
-    assert res.status_code == 200
+    assert res.status_code == 201
 
     carrot = {k: v for k, v in basic_carrot.items()}
     carrot["color"] = "Red"
