@@ -33,7 +33,7 @@ except ImportError:
     PYDANTIC_STRING_TYPES = ()
 
 try:
-    from sqlalchemy import desc, func, text
+    from sqlalchemy import delete, desc, func
     from sqlalchemy import inspect as sa_inspect
     from sqlalchemy.exc import IntegrityError, NoResultFound
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +74,10 @@ def pagination_factory(max_limit: Optional[int] = None):
         limit: Optional[int] = max_limit,
         order_by: Optional[str] = None,
     ) -> PAGINATION:
+        # Validate page parameter
+        if page < 1:
+            raise HTTPException(422, "page must be >= 1")
+
         # Validate skip parameter
         if skip < 0:
             raise HTTPException(422, "skip must be >= 0")
@@ -331,10 +335,14 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         else:
             self.contextual_filter_depends = Depends(lambda: {})
 
-        # Set up primary key
-        self._pk: str = (
-            db_model.__table__.primary_key.columns.keys()[0]  # type: ignore[union-attr]
-        )
+        # Set up primary key with validation
+        pk_columns = db_model.__table__.primary_key.columns.keys()  # type: ignore[union-attr]
+        if not pk_columns:
+            raise ValueError(
+                f"Model {db_model.__name__} must have a primary key. "
+                "CRUDRouter requires a primary key column."
+            )
+        self._pk: str = pk_columns[0]
         self._pk_type: Any = get_pk_type(schema, self._pk)
 
         # Set up schemas
@@ -569,7 +577,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     def get(
         self, path: str, *args: Any, **kwargs: Any
     ) -> Callable[[DecoratedCallable], DecoratedCallable]:
-        self.remove_api_route(path, ["Get"])
+        self.remove_api_route(path, ["GET"])
         return super().get(path, *args, **kwargs)
 
     def post(
@@ -819,23 +827,32 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     order_by_field = order_by[0]
                     order_by_direction = "ASC"
 
-                try:
-                    result = getattr(self.db_model, order_by_field)
-                except AttributeError:
+                # Validation: Reject private/dunder attributes (security)
+                if order_by_field.startswith("_"):
                     return desc(getattr(self.db_model, self._pk))
 
+                # Validation: Check that field exists
+                if not hasattr(self.db_model, order_by_field):
+                    return desc(getattr(self.db_model, self._pk))
+
+                field_attr = getattr(self.db_model, order_by_field)
+
+                # Validation: Only allow valid directions
+                if order_by_direction not in ("ASC", "DESC"):
+                    order_by_direction = "ASC"
+
                 if order_by_direction == "DESC":
-                    result = desc(result)
+                    return desc(field_attr)
 
-                return result
+                return field_attr
 
-            res = await db.execute(
+            result = await db.execute(
                 query.order_by(get_order_by()).limit(limit).offset(skip)
             )
-            res = res.all()
+            rows = result.all()
 
             db_models: List[Model] = []
-            for row in res:
+            for row in rows:
                 # pylint: disable=protected-access
                 row_dict = (
                     row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
@@ -1075,8 +1092,8 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         """Delete all items"""
 
         async def route(db: AsyncSession = Depends(self.db_func)) -> GetAllResult:
-            table_name = self.db_model.__tablename__  # type: ignore[union-attr]
-            await db.execute(text(f"delete from {table_name}"))
+            # Use SQLAlchemy delete API instead of raw SQL to prevent SQL injection
+            await db.execute(delete(self.db_model))
             await db.commit()
             return await self._get_all()(
                 db=db, pagination={"page": 1, "limit": None}, filters=None
