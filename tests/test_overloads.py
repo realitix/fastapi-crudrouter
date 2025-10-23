@@ -1,8 +1,12 @@
-from fastapi import APIRouter
+from typing import TYPE_CHECKING
+
 import pytest
 
 from .conftest import yield_test_client
 from .implementations import implementations
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter
 
 URLs = ["/potato", "/carrot"]
 PARAMS = [-1, 0, 1, 14, "ten"]
@@ -47,7 +51,7 @@ def overloaded_client(request):
             return DELETE_ONE
 
         @r.api_route("", methods=["DELETE"])
-        def overloaded_delete():
+        def overloaded_delete():  # noqa: F811
             return DELETE_ALL
 
         @r.post("/custom")

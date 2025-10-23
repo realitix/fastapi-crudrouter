@@ -6,8 +6,8 @@ from . import PAGINATION_SIZE, test_router
 
 PotatoUrl = "/potato"
 CarrotUrl = "/carrot"
-basic_carrot = dict(length=1.2, color="Orange")
-basic_potato = dict(thickness=0.24, mass=1.2, color="Brown", type="Russet")
+basic_carrot = {"length": 1.2, "color": "Orange"}
+basic_potato = {"thickness": 0.24, "mass": 1.2, "color": "Brown", "type": "Russet"}
 
 INSERT_COUNT = 20
 
@@ -16,7 +16,7 @@ INSERT_COUNT = 20
 def insert_items(
     client,
     url: str = PotatoUrl,
-    model: typing.Dict = None,
+    model: typing.Optional[typing.Dict] = None,
     count: int = INSERT_COUNT,
 ):
     model = model or basic_potato
@@ -101,7 +101,7 @@ class TestPagination:
     @pytest.mark.parametrize("limit", [2, 5, 10])
     def test_paging_no_limit(self, client, limit):
         client.delete(CarrotUrl)
-        for i in range(limit):
+        for _i in range(limit):
             res = client.post(url=CarrotUrl, json=basic_carrot)
             assert res.status_code == 201, res.json()
 

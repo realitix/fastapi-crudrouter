@@ -33,10 +33,10 @@ async def _setup_base_app(db_uri: str = DSN_LIST[0]):
     app = FastAPI()
 
     engine = create_async_engine(db_uri)
-    AsyncSessionLocal = async_sessionmaker(
+    AsyncSessionLocal = async_sessionmaker(  # pylint: disable=invalid-name
         autocommit=False, autoflush=False, bind=engine
     )
-    Base = declarative_base()
+    Base = declarative_base()  # pylint: disable=invalid-name
 
     async def get_session():
         async with AsyncSessionLocal() as session:
@@ -53,7 +53,7 @@ async def _setup_base_app(db_uri: str = DSN_LIST[0]):
 
 
 async def sqlalchemy_async_implementation(db_uri: str):
-    app, engine, Base, get_session = await _setup_base_app(db_uri)
+    app, engine, Base, get_session = await _setup_base_app(db_uri)  # pylint: disable=invalid-name
 
     class PotatoModel(Base):
         __tablename__ = "potatoes"
@@ -74,29 +74,29 @@ async def sqlalchemy_async_implementation(db_uri: str):
         await conn.run_sync(Base.metadata.create_all)
 
     router_settings = [
-        dict(
-            schema=Potato,
-            db_model=PotatoModel,
-            db=get_session,
-            prefix="potato",
-            paginate=PAGINATION_SIZE,
-        ),
-        dict(
-            schema=Carrot,
-            db_model=CarrotModel,
-            db=get_session,
-            create_schema=CarrotCreate,
-            update_schema=CarrotUpdate,
-            prefix="carrot",
-            tags=CUSTOM_TAGS,
-        ),
+        {
+            "schema": Potato,
+            "db_model": PotatoModel,
+            "db": get_session,
+            "prefix": "potato",
+            "paginate": PAGINATION_SIZE,
+        },
+        {
+            "schema": Carrot,
+            "db_model": CarrotModel,
+            "db": get_session,
+            "create_schema": CarrotCreate,
+            "update_schema": CarrotUpdate,
+            "prefix": "carrot",
+            "tags": CUSTOM_TAGS,
+        },
     ]
 
     return app, CRUDRouter, router_settings
 
 
 async def sqlalchemy_async_implementation_custom_ids():
-    app, engine, Base, get_session = await _setup_base_app()
+    app, engine, Base, get_session = await _setup_base_app()  # pylint: disable=invalid-name
 
     class PotatoModel(Base):
         __tablename__ = "potatoes"
@@ -118,7 +118,7 @@ async def sqlalchemy_async_implementation_custom_ids():
 
 
 async def sqlalchemy_async_implementation_string_pk():
-    app, engine, Base, get_session = await _setup_base_app()
+    app, engine, Base, get_session = await _setup_base_app()  # pylint: disable=invalid-name
 
     class PotatoTypeModel(Base):
         __tablename__ = "potato_type"
@@ -143,7 +143,7 @@ async def sqlalchemy_async_implementation_string_pk():
 
 
 async def sqlalchemy_async_implementation_integrity_errors():
-    app, engine, Base, get_session = await _setup_base_app()
+    app, engine, Base, get_session = await _setup_base_app()  # pylint: disable=invalid-name
 
     class PotatoModel(Base):
         __tablename__ = "potatoes"
@@ -187,7 +187,7 @@ async def sqlalchemy_async_implementation_integrity_errors():
 
 # Sync wrapper functions for backward compatibility
 def sqlalchemy_implementation(db_uri: str):
-    import asyncio
+    import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
     try:
         loop = asyncio.get_event_loop()
@@ -199,7 +199,7 @@ def sqlalchemy_implementation(db_uri: str):
 
 
 def sqlalchemy_implementation_custom_ids():
-    import asyncio
+    import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
     try:
         loop = asyncio.get_event_loop()
@@ -211,7 +211,7 @@ def sqlalchemy_implementation_custom_ids():
 
 
 def sqlalchemy_implementation_string_pk():
-    import asyncio
+    import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
     try:
         loop = asyncio.get_event_loop()
@@ -223,7 +223,7 @@ def sqlalchemy_implementation_string_pk():
 
 
 def sqlalchemy_implementation_integrity_errors():
-    import asyncio
+    import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
     try:
         loop = asyncio.get_event_loop()

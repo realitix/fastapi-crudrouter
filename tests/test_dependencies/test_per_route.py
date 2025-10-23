@@ -24,14 +24,14 @@ class NullDependency:
         pass
 
 
-DEPENDS_KWARGS = dict(
-    get_all_route=[Depends(NullDependency), Depends(RaisesException(401))],
-    get_one_route=[Depends(NullDependency), Depends(RaisesException(402))],
-    create_route=[Depends(NullDependency), Depends(RaisesException(403))],
-    update_route=[Depends(NullDependency), Depends(RaisesException(404))],
-    delete_all_route=[Depends(NullDependency), Depends(RaisesException(405))],
-    delete_one_route=[Depends(NullDependency), Depends(RaisesException(406))],
-)
+DEPENDS_KWARGS = {
+    "get_all_route": [Depends(NullDependency), Depends(RaisesException(401))],
+    "get_one_route": [Depends(NullDependency), Depends(RaisesException(402))],
+    "create_route": [Depends(NullDependency), Depends(RaisesException(403))],
+    "update_route": [Depends(NullDependency), Depends(RaisesException(404))],
+    "delete_all_route": [Depends(NullDependency), Depends(RaisesException(405))],
+    "delete_one_route": [Depends(NullDependency), Depends(RaisesException(406))],
+}
 
 
 @pytest.fixture(params=implementations)
@@ -57,7 +57,7 @@ def test_route_disable(client, url):
     ]
 
     err_codes = set()
-    for method, url in actions:
+    for method, url in actions:  # noqa: PLR1704
         print(method, url, err_codes)
         status_code = method(url).status_code
 

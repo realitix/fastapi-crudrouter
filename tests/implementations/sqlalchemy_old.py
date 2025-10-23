@@ -66,22 +66,22 @@ def sqlalchemy_implementation(db_uri: str):
 
     Base.metadata.create_all(bind=engine)
     router_settings = [
-        dict(
-            schema=Potato,
-            db_model=PotatoModel,
-            db=session,
-            prefix="potato",
-            paginate=PAGINATION_SIZE,
-        ),
-        dict(
-            schema=Carrot,
-            db_model=CarrotModel,
-            db=session,
-            create_schema=CarrotCreate,
-            update_schema=CarrotUpdate,
-            prefix="carrot",
-            tags=CUSTOM_TAGS,
-        ),
+        {
+            "schema": Potato,
+            "db_model": PotatoModel,
+            "db": session,
+            "prefix": "potato",
+            "paginate": PAGINATION_SIZE,
+        },
+        {
+            "schema": Carrot,
+            "db_model": CarrotModel,
+            "db": session,
+            "create_schema": CarrotCreate,
+            "update_schema": CarrotUpdate,
+            "prefix": "carrot",
+            "tags": CUSTOM_TAGS,
+        },
     ]
 
     return app, SQLAlchemyCRUDRouter, router_settings

@@ -1,10 +1,10 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import pytest
 
 from .utils import compare_dict
 
-basic_potato = dict(thickness=0.24, mass=1.2, color="Brown", type="Russet")
+basic_potato = {"thickness": 0.24, "mass": 1.2, "color": "Brown", "type": "Russet"}
 URL = "/potato"
 
 
@@ -15,20 +15,22 @@ def extract_data_from_response(response_data):
     return response_data
 
 
-def test_get(client, url: str = URL, params: dict = None, expected_length: int = 0):
+def test_get(
+    client, url: str = URL, params: Optional[dict] = None, expected_length: int = 0
+):
     res = client.get(url, params=params)
     response_data = res.json()
 
     assert res.status_code == 200, response_data
 
     data = extract_data_from_response(response_data)
-    assert type(data) == list and len(data) == expected_length
+    assert isinstance(data, list) and len(data) == expected_length
 
     return data
 
 
 def test_post(
-    client, url: str = URL, model: Dict = None, expected_length: int = 1
+    client, url: str = URL, model: Optional[Dict] = None, expected_length: int = 1
 ) -> dict:
     model = model or basic_potato
     res = client.post(url, json=model)
@@ -41,7 +43,9 @@ def test_post(
     return res.json()
 
 
-def test_get_one(client, url: str = URL, model: Dict = None, id_key: str = "id"):
+def test_get_one(
+    client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
+):
     model = model or basic_potato
     res = client.post(url, json=model)
     assert res.status_code == 201
@@ -57,7 +61,9 @@ def test_get_one(client, url: str = URL, model: Dict = None, id_key: str = "id")
     assert compare_dict(res.json(), model, exclude=[id_key])
 
 
-def test_update(client, url: str = URL, model: Dict = None, id_key: str = "id"):
+def test_update(
+    client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
+):
     """Test PUT - full update
 
     Note: This test verifies that PUT works correctly by sending all fields.
@@ -76,7 +82,7 @@ def test_update(client, url: str = URL, model: Dict = None, id_key: str = "id"):
 
     test_get(client, url, expected_length=1)
 
-    tuber = {k: v for k, v in model.items()}
+    tuber = dict(model.items())
     tuber["color"] = "yellow"
 
     res = client.put(f"{url}/{data[id_key]}", json=tuber)
@@ -90,7 +96,9 @@ def test_update(client, url: str = URL, model: Dict = None, id_key: str = "id"):
     assert not compare_dict(res.json(), model, exclude=[id_key])
 
 
-def test_patch(client, url: str = URL, model: Dict = None, id_key: str = "id"):
+def test_patch(
+    client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
+):
     """Test PATCH with partial payload - only provided fields should be updated"""
     test_get(client, url, expected_length=0)
 
@@ -136,7 +144,7 @@ def test_patch(client, url: str = URL, model: Dict = None, id_key: str = "id"):
 
 
 def test_patch_null_validation(
-    client, url: str = URL, model: Dict = None, id_key: str = "id"
+    client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
 ):
     """Test that PATCH rejects explicit null for non-nullable fields but allows omission"""
     test_get(client, url, expected_length=0)
@@ -174,7 +182,9 @@ def test_patch_null_validation(
     )  # Should still be original value
 
 
-def test_delete_one(client, url: str = URL, model: Dict = None, id_key: str = "id"):
+def test_delete_one(
+    client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
+):
     model = model or basic_potato
     res = client.post(url, json=model)
     created_item = res.json()
@@ -202,8 +212,8 @@ def test_delete_one(client, url: str = URL, model: Dict = None, id_key: str = "i
 def test_delete_all(
     client,
     url: str = URL,
-    model: Dict = None,
-    model2: Dict = None,
+    model: Optional[Dict] = None,
+    model2: Optional[Dict] = None,
 ):
     model = model or basic_potato
     model2 = model2 or basic_potato
@@ -231,7 +241,7 @@ def test_delete_all(
 
 
 @pytest.mark.parametrize("id_", [-1, 0, 4, "14"])
-def test_not_found(client, id_, url: str = URL, model: Dict = None):
+def test_not_found(client, id_, url: str = URL, model: Optional[Dict] = None):
     url = f"{url}/{id_}"
     model = model or basic_potato
     assert client.get(url).status_code == 404
@@ -254,13 +264,14 @@ def test_patch_schema_derives_from_update_schema():
     read schema, PATCH would allow modifying fields that were deliberately excluded
     from update_schema (e.g., sensitive fields like is_admin, created_at, etc.).
     """
-    from pydantic import BaseModel
-    from sqlalchemy import Boolean, Column, Integer, String
-    from sqlalchemy.ext.declarative import declarative_base
+    # pylint: disable=import-outside-toplevel
+    from pydantic import BaseModel  # noqa: PLC0415
+    from sqlalchemy import Boolean, Column, Integer, String  # noqa: PLC0415
+    from sqlalchemy.ext.declarative import declarative_base  # noqa: PLC0415
 
-    from fastapi_crudrouter import CRUDRouter
+    from fastapi_crudrouter import CRUDRouter  # noqa: PLC0415
 
-    Base = declarative_base()
+    Base = declarative_base()  # pylint: disable=invalid-name
 
     # Create a model with a sensitive field
     class UserModel(Base):
@@ -329,8 +340,9 @@ def test_patch_preserves_validators():
     generation, PATCH would accept invalid data that was explicitly rejected by
     the developer's validators (e.g., invalid emails, blacklisted values, etc.).
     """
-    from pydantic import BaseModel, field_validator, model_validator
-    from pydantic_core import ValidationError
+    # pylint: disable=import-outside-toplevel
+    from pydantic import BaseModel, field_validator, model_validator  # noqa: PLC0415
+    from pydantic_core import ValidationError  # noqa: PLC0415
 
     # Create a schema with field validator
     class DataUpdate(BaseModel):
@@ -351,7 +363,9 @@ def test_patch_preserves_validators():
                 raise ValueError("Name is blacklisted")
             return model
 
-    from fastapi_crudrouter.crud_router import optional_schema_factory
+    from fastapi_crudrouter.crud_router import (  # noqa: PLC0415
+        optional_schema_factory,
+    )
 
     # Generate patch schema
     patch_schema = optional_schema_factory(DataUpdate, pk_field_name="id", name="Patch")
@@ -366,7 +380,7 @@ def test_patch_preserves_validators():
     invalid_email = {"email": "hacker@evil.com"}
     try:
         patch_schema(**invalid_email)
-        assert False, "Should have raised ValidationError for invalid email"
+        raise AssertionError("Should have raised ValidationError for invalid email")
     except ValidationError as e:
         assert "company emails" in str(e).lower() or "email" in str(e).lower()
 
@@ -374,7 +388,7 @@ def test_patch_preserves_validators():
     blacklisted_name = {"name": "admin", "email": "admin@company.com"}
     try:
         patch_schema(**blacklisted_name)
-        assert False, "Should have raised ValidationError for blacklisted name"
+        raise AssertionError("Should have raised ValidationError for blacklisted name")
     except ValidationError as e:
         assert "blacklisted" in str(e).lower() or "admin" in str(e).lower()
 
@@ -388,7 +402,7 @@ def test_patch_preserves_validators():
     partial_invalid = {"email": "attacker@evil.com"}
     try:
         patch_schema(**partial_invalid)
-        assert False, (
+        raise AssertionError(
             "Should have raised ValidationError for invalid email in partial update"
         )
     except ValidationError as e:
@@ -402,15 +416,18 @@ def test_patch_preserves_field_aliases():
     generation, PATCH would break for any project using field aliases for API
     compatibility (e.g., camelCase to snake_case conversion).
     """
-    from pydantic import BaseModel, Field
-    from pydantic_core import ValidationError
+    # pylint: disable=import-outside-toplevel
+    from pydantic import BaseModel, Field  # noqa: PLC0415
+    from pydantic_core import ValidationError  # noqa: PLC0415
 
     # Create a schema with field aliases (common for API compatibility)
     class UserUpdate(BaseModel):
         full_name: str = Field(alias="fullName")
         email_address: str = Field(alias="emailAddress", min_length=5)
 
-    from fastapi_crudrouter.crud_router import optional_schema_factory
+    from fastapi_crudrouter.crud_router import (  # noqa: PLC0415
+        optional_schema_factory,
+    )
 
     # Generate patch schema
     patch_schema = optional_schema_factory(UserUpdate, pk_field_name="id", name="Patch")
@@ -437,7 +454,9 @@ def test_patch_preserves_field_aliases():
     invalid_email = {"emailAddress": "ab"}  # Too short
     try:
         patch_schema(**invalid_email)
-        assert False, "Should have raised ValidationError for min_length constraint"
+        raise AssertionError(
+            "Should have raised ValidationError for min_length constraint"
+        )
     except ValidationError as e:
         assert (
             "at least 5 characters" in str(e).lower()
@@ -457,13 +476,14 @@ def test_patch_null_check_uses_update_schema():
     instead of the update schema, attackers could bypass required-field constraints
     by exploiting differences between read and write schemas.
     """
-    from pydantic import BaseModel
-    from sqlalchemy import Column, Integer, String
-    from sqlalchemy.ext.declarative import declarative_base
+    # pylint: disable=import-outside-toplevel
+    from pydantic import BaseModel  # noqa: PLC0415
+    from sqlalchemy import Column, Integer, String  # noqa: PLC0415
+    from sqlalchemy.ext.declarative import declarative_base  # noqa: PLC0415
 
-    from fastapi_crudrouter import CRUDRouter
+    from fastapi_crudrouter import CRUDRouter  # noqa: PLC0415
 
-    Base = declarative_base()
+    Base = declarative_base()  # pylint: disable=invalid-name
 
     # Scenario 1: Field required in update but absent from read schema
     # (e.g., password field not visible in read but required for update)
@@ -514,7 +534,8 @@ def test_patch_null_check_uses_update_schema():
 
     # Verify that password in patch_schema is Optional (for partial updates)
     # but the null guard should still reject explicit null based on update_schema
-    from fastapi_crudrouter.crud_router import is_optional_type
+    # pylint: disable=import-outside-toplevel
+    from fastapi_crudrouter.crud_router import is_optional_type  # noqa: PLC0415
 
     password_annotation = router.patch_schema.model_fields["password"].annotation
     assert is_optional_type(password_annotation)  # Should be Optional for PATCH
@@ -526,13 +547,14 @@ def test_patch_null_check_required_field_different_optionality():
     Scenario: Field is Optional in read schema but required in update schema.
     The null guard must respect the update schema's requirement.
     """
-    from pydantic import BaseModel
-    from sqlalchemy import Column, Integer, String
-    from sqlalchemy.ext.declarative import declarative_base
+    # pylint: disable=import-outside-toplevel
+    from pydantic import BaseModel  # noqa: PLC0415
+    from sqlalchemy import Column, Integer, String  # noqa: PLC0415
+    from sqlalchemy.ext.declarative import declarative_base  # noqa: PLC0415
 
-    from fastapi_crudrouter import CRUDRouter
+    from fastapi_crudrouter import CRUDRouter  # noqa: PLC0415
 
-    Base = declarative_base()
+    Base = declarative_base()  # pylint: disable=invalid-name
 
     class AccountModel(Base):
         __tablename__ = "accounts"
@@ -557,7 +579,7 @@ def test_patch_null_check_required_field_different_optionality():
     async def get_session():
         yield None
 
-    router = CRUDRouter(
+    CRUDRouter(
         schema=AccountRead,
         update_schema=AccountUpdate,
         db_model=AccountModel,
@@ -565,7 +587,8 @@ def test_patch_null_check_required_field_different_optionality():
     )
 
     # Verify schemas have different optionality for email
-    from fastapi_crudrouter.crud_router import is_optional_type
+    # pylint: disable=import-outside-toplevel,unsubscriptable-object
+    from fastapi_crudrouter.crud_router import is_optional_type  # noqa: PLC0415
 
     read_email_field = AccountRead.model_fields["email"]
     update_email_field = AccountUpdate.model_fields["email"]

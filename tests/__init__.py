@@ -1,6 +1,7 @@
+# pylint: disable=useless-import-alias
 from pydantic import BaseModel
 
-from .conf import config
+from .conf import config as config
 
 PAGINATION_SIZE = 10
 CUSTOM_TAGS = ["Tag1", "Tag2"]

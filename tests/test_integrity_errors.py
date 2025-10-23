@@ -7,7 +7,7 @@ POTATO_URL = "/potatoes"
 
 def test_integrity_error_create(integrity_errors_client):
     client = integrity_errors_client
-    potato = dict(id=1, thickness=2, mass=5, color="red", type="russet")
+    potato = {"id": 1, "thickness": 2, "mass": 5, "color": "red", "type": "russet"}
 
     args = client, POTATO_URL, potato
     test_router.test_post(*args)
@@ -15,16 +15,16 @@ def test_integrity_error_create(integrity_errors_client):
         test_router.test_post(*args)
 
     # No integrity error here because of the create_schema
-    args = client, "/carrots", dict(id=1, length=2, color="red")
+    args = client, "/carrots", {"id": 1, "length": 2, "color": "red"}
     test_router.test_post(*args)
     test_router.test_post(*args, expected_length=2)
 
 
 def test_integrity_error_update(integrity_errors_client):
     client = integrity_errors_client
-    potato1 = dict(id=1, thickness=2, mass=5, color="red", type="russet")
+    potato1 = {"id": 1, "thickness": 2, "mass": 5, "color": "red", "type": "russet"}
 
-    potato2 = dict(id=2, thickness=9, mass=5, color="yellow", type="mini")
+    potato2 = {"id": 2, "thickness": 9, "mass": 5, "color": "yellow", "type": "mini"}
 
     args = client, POTATO_URL
     test_router.test_post(*args, potato1, expected_length=1)

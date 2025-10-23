@@ -6,14 +6,15 @@ from typing import Annotated, Optional, Union
 from pydantic import BaseModel
 
 from fastapi_crudrouter.crud_router import (
+    _is_string_like_type,
     extract_python_type,
     generate_fields_with_suffixes,
-    _is_string_like_type,
 )
 
 # Import Pydantic string types for testing
 try:
-    from pydantic import EmailStr, HttpUrl, AnyUrl
+    from pydantic import AnyUrl, EmailStr, HttpUrl
+
     PYDANTIC_TYPES_AVAILABLE = True
 except ImportError:
     PYDANTIC_TYPES_AVAILABLE = False
@@ -87,12 +88,12 @@ class TestExtractPythonType:
         class TestSchema(BaseModel):
             url: Optional[HttpUrl] = None
 
-        field_type = TestSchema.model_fields['url'].annotation
+        field_type = TestSchema.model_fields["url"].annotation
         result = extract_python_type(field_type)
 
         # Should extract the actual Url type, not Annotated
-        assert hasattr(result, '__name__')
-        assert 'Url' in result.__name__
+        assert hasattr(result, "__name__")
+        assert "Url" in result.__name__
 
     def test_extract_from_optional_pydantic_emailstr(self):
         """Test extraction from Optional[EmailStr] field annotation"""
@@ -102,7 +103,7 @@ class TestExtractPythonType:
         class TestSchema(BaseModel):
             email: Optional[EmailStr] = None
 
-        field_type = TestSchema.model_fields['email'].annotation
+        field_type = TestSchema.model_fields["email"].annotation
         result = extract_python_type(field_type)
 
         # Should extract EmailStr type
@@ -145,9 +146,7 @@ class TestIsStringLikeType:
         class TestSchema(BaseModel):
             email: EmailStr
 
-        field_type = extract_python_type(
-            TestSchema.model_fields['email'].annotation
-        )
+        field_type = extract_python_type(TestSchema.model_fields["email"].annotation)
         assert _is_string_like_type(field_type) is True
 
     def test_httpurl_type(self):
@@ -159,9 +158,7 @@ class TestIsStringLikeType:
         class TestSchema(BaseModel):
             url: HttpUrl
 
-        field_type = extract_python_type(
-            TestSchema.model_fields['url'].annotation
-        )
+        field_type = extract_python_type(TestSchema.model_fields["url"].annotation)
         assert _is_string_like_type(field_type) is True
 
     def test_anyurl_type(self):
@@ -173,9 +170,7 @@ class TestIsStringLikeType:
         class TestSchema(BaseModel):
             url: AnyUrl
 
-        field_type = extract_python_type(
-            TestSchema.model_fields['url'].annotation
-        )
+        field_type = extract_python_type(TestSchema.model_fields["url"].annotation)
         assert _is_string_like_type(field_type) is True
 
     def test_none_type(self):
@@ -184,12 +179,15 @@ class TestIsStringLikeType:
 
     def test_custom_class(self):
         """Test that custom class returns False"""
+
         class CustomClass:
             pass
+
         assert _is_string_like_type(CustomClass) is False
 
     def test_type_with_str_in_name(self):
         """Test that custom type with 'Str' in name returns True"""
+
         # Create a mock type with 'Str' in its name
         class CustomStr:
             __name__ = "CustomStr"
@@ -198,6 +196,7 @@ class TestIsStringLikeType:
 
     def test_type_with_email_in_name(self):
         """Test that custom type with 'Email' in name returns True"""
+
         class CustomEmail:
             __name__ = "CustomEmail"
 
@@ -205,6 +204,7 @@ class TestIsStringLikeType:
 
     def test_type_with_url_in_name(self):
         """Test that custom type with 'Url' in name returns True"""
+
         class CustomUrl:
             __name__ = "CustomUrl"
 
@@ -491,10 +491,7 @@ class TestFilterIntegration:
         assert res.status_code == 200
 
         data = res.json()
-        if isinstance(data, dict) and "data" in data:
-            items = data["data"]
-        else:
-            items = data
+        items = data["data"] if isinstance(data, dict) and "data" in data else data
 
         # Should return 2 potatoes with "Brown" in color
         assert len(items) == 2
@@ -520,10 +517,7 @@ class TestFilterIntegration:
         assert res.status_code == 200
 
         data = res.json()
-        if isinstance(data, dict) and "data" in data:
-            items = data["data"]
-        else:
-            items = data
+        items = data["data"] if isinstance(data, dict) and "data" in data else data
 
         # Should find the potato despite case difference
         assert len(items) == 1

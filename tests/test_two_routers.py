@@ -3,8 +3,8 @@ import pytest
 from . import test_router
 from .utils import compare_dict
 
-basic_potato = dict(thickness=0.24, mass=1.2, color="Brown", type="Russet")
-basic_carrot = dict(length=1.2, color="Orange")
+basic_potato = {"thickness": 0.24, "mass": 1.2, "color": "Brown", "type": "Russet"}
+basic_carrot = {"length": 1.2, "color": "Orange"}
 
 PotatoUrl = "/potato"
 CarrotUrl = "/carrot"
@@ -35,7 +35,7 @@ def test_update(client):
     data = res.json()
     assert res.status_code == 201
 
-    carrot = {k: v for k, v in basic_carrot.items()}
+    carrot = dict(basic_carrot.items())
     carrot["color"] = "Red"
     carrot["length"] = 54.0
 

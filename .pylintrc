@@ -1,0 +1,38 @@
+[MESSAGES CONTROL]
+# Disable specific warnings
+disable=
+    # Documentation warnings - acceptable for this project
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    # Design warnings - acceptable for complex routers
+    too-few-public-methods,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    # Code duplication between test implementations
+    duplicate-code,
+    # Test-specific warnings
+    cell-var-from-loop,
+    function-redefined,
+    redefined-outer-name,
+    unused-variable,
+    unused-argument,
+    unidiomatic-typecheck,
+    unsubscriptable-object,
+    ungrouped-imports,
+    expression-not-assigned,
+    line-too-long,
+    invalid-name
+
+[DESIGN]
+# Increase limits for complex applications
+max-attributes=25
+max-args=30
+max-locals=50
+max-branches=25
+max-statements=100
+max-module-lines=1500
+
+[FORMAT]
+max-line-length=88

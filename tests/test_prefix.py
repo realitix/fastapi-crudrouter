@@ -8,7 +8,7 @@ def router(request):
     impl, dsn = request.param
 
     app, router, settings = impl(db_uri=dsn)
-    kwargs = {**settings[0], **dict(prefix=None)}
+    kwargs = {**settings[0], **{"prefix": None}}
     router = router(**kwargs)
 
     yield router

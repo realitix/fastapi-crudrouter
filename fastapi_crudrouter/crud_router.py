@@ -7,7 +7,9 @@ from typing import (
     Any,
     AsyncGenerator,
     Callable,
+    Coroutine,
     List,
+    NoReturn,
     Optional,
     Type,
     TypeAlias,
@@ -24,7 +26,8 @@ from pydantic import BaseModel, create_model
 # Import Pydantic string-like types for filter generation
 try:
     from pydantic import AnyUrl, EmailStr, HttpUrl
-    PYDANTIC_STRING_TYPES = (EmailStr, AnyUrl, HttpUrl)
+
+    PYDANTIC_STRING_TYPES: tuple = (EmailStr, AnyUrl, HttpUrl)
 except ImportError:
     # If specific types aren't available, use empty tuple
     PYDANTIC_STRING_TYPES = ()
@@ -42,20 +45,22 @@ except ImportError as e:
 
 # Type for SQLAlchemy model classes
 # Using Type[DeclarativeBase] to accept any class that inherits from DeclarativeBase
-Model = Union[Type[DeclarativeBase], DeclarativeMeta]
+ModelType = Union[Type[DeclarativeBase], DeclarativeMeta]
+Model = Union[DeclarativeBase, Any]  # Model instances
 SessionGenerator: TypeAlias = Callable[..., AsyncGenerator[AsyncSession, None]]
 
-DEPENDENCIES = Optional[List[Depends]]
+DEPENDENCIES = Optional[List[Any]]
 PAGINATION = dict[str, Any]
-PYDANTIC_SCHEMA = BaseModel
+PYDANTIC_SCHEMA = BaseModel  # pylint: disable=invalid-name
 
 NOT_FOUND = HTTPException(404, "Item not found")
 
 
-def get_pk_type(schema: Type[BaseModel], pk_field: str) -> type:
+def get_pk_type(schema: Type[BaseModel], pk_field: str) -> Any:
     """Extract primary key type from schema"""
     try:
-        return schema.model_fields[pk_field].annotation
+        field_annotation = schema.model_fields[pk_field].annotation
+        return field_annotation if field_annotation is not None else int
     except (KeyError, AttributeError):
         return int
 
@@ -93,7 +98,7 @@ def schema_factory(
     schema_cls: Type[BaseModel], pk_field_name: str = "id", name: str = "Create"
 ) -> Type[BaseModel]:
     """Create schema without primary key for create/update operations"""
-    fields = {}
+    fields: dict[str, Any] = {}
     for field_name, field_info in schema_cls.model_fields.items():
         if field_name != pk_field_name:
             if field_info.default is not None:
@@ -125,7 +130,7 @@ def optional_schema_factory(
             fields[field_name] = (Optional[field_info.annotation], new_field_info)
 
     # Create new model with __base__ to inherit validators
-    new_model = create_model(
+    new_model = create_model(  # type: ignore[call-overload]
         f"{schema_cls.__name__}{name}",
         __base__=schema_cls,
         __module__=schema_cls.__module__,
@@ -193,9 +198,9 @@ def _is_string_like_type(field_type: Any) -> bool:
 
     # Fallback: check if type name suggests it's a string type
     # This catches custom string validators and other Pydantic string types
-    if hasattr(field_type, '__name__'):
+    if hasattr(field_type, "__name__"):
         name = field_type.__name__
-        if 'Str' in name or 'Email' in name or 'Url' in name or 'Uri' in name:
+        if "Str" in name or "Email" in name or "Url" in name or "Uri" in name:
             return True
 
     return False
@@ -232,7 +237,7 @@ def create_filter(base_model: type[PYDANTIC_SCHEMA]) -> type[PYDANTIC_SCHEMA]:
     base_fields = base_model.model_fields
     dynamic_fields = generate_fields_with_suffixes(base_fields)
 
-    return create_model(
+    return create_model(  # type: ignore[call-overload]
         base_model.__name__,
         __base__=base_model,
         **{
@@ -269,13 +274,13 @@ class GetAllResult(TypedDict):
     data: list[Model]
 
 
-class CRUDRouter(APIRouter):
+class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     """Simplified CRUD Router for SQLAlchemy async only"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-positional-arguments
         self,
         schema: Type[PYDANTIC_SCHEMA],
-        db_model: Model,
+        db_model: ModelType,
         db: SessionGenerator,
         create_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
         update_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
@@ -327,8 +332,10 @@ class CRUDRouter(APIRouter):
             self.contextual_filter_depends = Depends(lambda: {})
 
         # Set up primary key
-        self._pk: str = db_model.__table__.primary_key.columns.keys()[0]
-        self._pk_type: type = get_pk_type(schema, self._pk)
+        self._pk: str = (
+            db_model.__table__.primary_key.columns.keys()[0]  # type: ignore[union-attr]
+        )
+        self._pk_type: Any = get_pk_type(schema, self._pk)
 
         # Set up schemas
         self.create_schema = (
@@ -353,7 +360,8 @@ class CRUDRouter(APIRouter):
         # Set up filtering with auto-generated fields from schema
         auto_filter_fields = {}
 
-        # Generate automatic filter fields from schema (all fields become optional filters)
+        # Generate automatic filter fields from schema
+        # (all fields become optional filters)
         for field_name, field_info in self.schema.model_fields.items():
             # Only include simple fields (exclude joins, custom functions)
             if not field_info.metadata:
@@ -366,10 +374,8 @@ class CRUDRouter(APIRouter):
                     auto_filter_fields[field_name] = (field_info.annotation, None)
                 else:
                     # Make it optional
-                    auto_filter_fields[field_name] = (
-                        Optional[field_info.annotation],
-                        None,
-                    )
+                    optional_type: Any = Optional[field_info.annotation]
+                    auto_filter_fields[field_name] = (optional_type, None)
 
         # Merge with custom filter_schema if provided
         if filter_schema:
@@ -382,7 +388,7 @@ class CRUDRouter(APIRouter):
             }
 
             # Inherit from filter_schema to preserve metadata (callbacks)
-            base_filter = create_model(
+            base_filter = create_model(  # type: ignore[call-overload]
                 f"{self.schema.__name__}Filter",
                 __base__=filter_schema,  # Preserves callbacks and metadata
                 **additional_fields,
@@ -390,14 +396,14 @@ class CRUDRouter(APIRouter):
             self.filter_schema = create_filter(base_filter)
         # Use only auto-generated fields
         elif auto_filter_fields:
-            base_filter = create_model(
+            base_filter = create_model(  # type: ignore[call-overload]
                 f"{self.schema.__name__}AutoFilter", **auto_filter_fields
             )
             self.filter_schema = create_filter(base_filter)
         else:
-            self.filter_schema = None
+            self.filter_schema = None  # type: ignore[assignment]
 
-        self.filter_depends = (
+        self.filter_depends: Any = (
             Depends(self.filter_schema) if self.filter_schema else Depends(lambda: None)
         )
 
@@ -422,10 +428,11 @@ class CRUDRouter(APIRouter):
 
         # Set up router only if routes are enabled
         if routes_enabled:
-            prefix = str(prefix if prefix else db_model.__tablename__).lower()
+            table_name = db_model.__tablename__  # type: ignore[union-attr]
+            prefix = str(prefix if prefix else table_name).lower()
             prefix = "/" + prefix.strip("/")
-            tags = tags or [prefix.strip("/").capitalize()]
-            super().__init__(prefix=prefix, tags=tags, **kwargs)
+            tags_list: Any = tags or [prefix.strip("/").capitalize()]
+            super().__init__(prefix=prefix, tags=tags_list, **kwargs)
         else:
             # Initialize router with empty prefix if no routes are enabled
             super().__init__(prefix="", **kwargs)
@@ -659,10 +666,10 @@ class CRUDRouter(APIRouter):
         return query
 
     async def compute_subdata(
-        self, db: AsyncSession, model_id, join_list_fields: dict
+        self, db: AsyncSession, model_id: Any, join_list_fields: dict
     ) -> Any:
         """Compute subdata for list joins"""
-        subdata = {}
+        subdata: dict[str, Any] = {}
         for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
             subdata[field] = []
             subres = (
@@ -686,7 +693,7 @@ class CRUDRouter(APIRouter):
             ref_template="{model}", mode="serialization"
         )
 
-    def _raise(self, e: Exception, status_code: int = 422) -> HTTPException:
+    def _raise(self, e: Exception, status_code: int = 422) -> NoReturn:
         """Handle exceptions with optional callback"""
         if self.raise_callback:
             self.raise_callback(e)
@@ -705,15 +712,15 @@ class CRUDRouter(APIRouter):
             "delete_one",
         ]
 
-    def _get_all(self) -> Callable[..., GetAllResult]:
+    def _get_all(self) -> Callable[..., Coroutine[Any, Any, GetAllResult]]:
         """Get all items with pagination and filtering"""
 
         async def route(
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
-            filters: self.filter_schema = self.filter_depends,  # type: ignore
-            contextual_filters: dict = self.contextual_filter_depends,  # type: ignore
-            user: Any = self.current_user_depends,  # type: ignore
+            filters: self.filter_schema = self.filter_depends,  # type: ignore[name-defined]
+            contextual_filters: dict = self.contextual_filter_depends,
+            user: Any = self.current_user_depends,
         ) -> GetAllResult:
             page, limit = pagination.get("page", 1), pagination.get("limit")
             # Use skip directly if provided, otherwise calculate from page
@@ -722,11 +729,13 @@ class CRUDRouter(APIRouter):
                 skip = (page - 1) * limit if limit else 0
 
             # Permission check
-            if self.permission_checker and "get_all" in self.permissions:
-                if user and not self.permission_checker(
-                    user, self.permissions["get_all"]
-                ):
-                    raise HTTPException(403, "No permission to view resources")
+            if (
+                self.permission_checker
+                and "get_all" in self.permissions
+                and user
+                and not self.permission_checker(user, self.permissions["get_all"])
+            ):
+                raise HTTPException(403, "No permission to view resources")
 
             base_class_fields, join_fields, join_list_fields, custom_func_fields = (
                 self.get_fields(self.get_all_schema)
@@ -793,6 +802,7 @@ class CRUDRouter(APIRouter):
                 return query_src
 
             query = query_where(query).select_from(self.db_model)
+            # pylint: disable=not-callable
             query_count = query.with_only_columns(func.count()).select_from(
                 self.db_model
             )
@@ -826,6 +836,7 @@ class CRUDRouter(APIRouter):
 
             db_models: List[Model] = []
             for row in res:
+                # pylint: disable=protected-access
                 row_dict = (
                     row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
                 )
@@ -849,20 +860,22 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _get_one(self) -> Callable[..., Model]:
+    def _get_one(self) -> Callable[..., Coroutine[Any, Any, Model]]:
         """Get one item by ID"""
 
         async def route(
-            item_id: self._pk_type,
-            db: AsyncSession = Depends(self.db_func),  # type: ignore
-            user: Any = self.current_user_depends,  # type: ignore
+            item_id: self._pk_type,  # type: ignore[name-defined]
+            db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,
         ) -> Model:
             # Permission check
-            if self.permission_checker and "get_one" in self.permissions:
-                if user and not self.permission_checker(
-                    user, self.permissions["get_one"]
-                ):
-                    raise HTTPException(403, "No permission to view this resource")
+            if (
+                self.permission_checker
+                and "get_one" in self.permissions
+                and user
+                and not self.permission_checker(user, self.permissions["get_one"])
+            ):
+                raise HTTPException(403, "No permission to view this resource")
 
             # Access check
             if self.access_checker and user:
@@ -878,6 +891,7 @@ class CRUDRouter(APIRouter):
                 query = query.select_from(self.db_model)
                 query = query.where(getattr(self.db_model, self._pk) == item_id)
                 row = (await db.execute(query)).one()
+                # pylint: disable=protected-access
                 row_dict = (
                     row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
                 )
@@ -889,25 +903,26 @@ class CRUDRouter(APIRouter):
 
             if model:
                 return model
-            else:
-                raise NOT_FOUND from None
+            raise NOT_FOUND from None
 
         return route
 
-    def _create(self) -> Callable[..., Model]:
+    def _create(self) -> Callable[..., Coroutine[Any, Any, Model]]:
         """Create new item"""
 
         async def route(
-            model: self.create_schema,  # type: ignore
+            model: self.create_schema,  # type: ignore[name-defined]
             db: AsyncSession = Depends(self.db_func),
-            user: Any = self.current_user_depends,  # type: ignore
+            user: Any = self.current_user_depends,
         ) -> Model:
             # Permission check
-            if self.permission_checker and "create" in self.permissions:
-                if user and not self.permission_checker(
-                    user, self.permissions["create"]
-                ):
-                    raise HTTPException(403, "No permission to create resources")
+            if (
+                self.permission_checker
+                and "create" in self.permissions
+                and user
+                and not self.permission_checker(user, self.permissions["create"])
+            ):
+                raise HTTPException(403, "No permission to create resources")
 
             # Validation métier
             if self.create_validator and user:
@@ -927,7 +942,7 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _update(self) -> Callable[..., Model]:
+    def _update(self) -> Callable[..., Coroutine[Any, Any, Model]]:
         """Full update existing item (PUT)
 
         PUT (RFC 7231): Full replacement - all fields must be provided.
@@ -935,17 +950,19 @@ class CRUDRouter(APIRouter):
         """
 
         async def route(
-            item_id: self._pk_type,  # type: ignore
-            model: self.update_schema,  # type: ignore
+            item_id: self._pk_type,  # type: ignore[name-defined]
+            model: self.update_schema,  # type: ignore[name-defined]
             db: AsyncSession = Depends(self.db_func),
-            user: Any = self.current_user_depends,  # type: ignore
+            user: Any = self.current_user_depends,
         ) -> Model:
             # Permission check
-            if self.permission_checker and "update" in self.permissions:
-                if user and not self.permission_checker(
-                    user, self.permissions["update"]
-                ):
-                    raise HTTPException(403, "No permission to update resources")
+            if (
+                self.permission_checker
+                and "update" in self.permissions
+                and user
+                and not self.permission_checker(user, self.permissions["update"])
+            ):
+                raise HTTPException(403, "No permission to update resources")
 
             # Access check
             if self.access_checker and user:
@@ -985,7 +1002,7 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _patch(self) -> Callable[..., Model]:
+    def _patch(self) -> Callable[..., Coroutine[Any, Any, Model]]:
         """Partially update existing item (PATCH)
 
         PATCH (RFC 5789): Partial update - only provided fields are modified.
@@ -993,17 +1010,19 @@ class CRUDRouter(APIRouter):
         """
 
         async def route(
-            item_id: self._pk_type,  # type: ignore
-            model: self.patch_schema,  # type: ignore
+            item_id: self._pk_type,  # type: ignore[name-defined]
+            model: self.patch_schema,  # type: ignore[name-defined]
             db: AsyncSession = Depends(self.db_func),
-            user: Any = self.current_user_depends,  # type: ignore
+            user: Any = self.current_user_depends,
         ) -> Model:
             # Permission check
-            if self.permission_checker and "update" in self.permissions:
-                if user and not self.permission_checker(
-                    user, self.permissions["update"]
-                ):
-                    raise HTTPException(403, "No permission to update resources")
+            if (
+                self.permission_checker
+                and "update" in self.permissions
+                and user
+                and not self.permission_checker(user, self.permissions["update"])
+            ):
+                raise HTTPException(403, "No permission to update resources")
 
             # Access check
             if self.access_checker and user:
@@ -1021,11 +1040,13 @@ class CRUDRouter(APIRouter):
                 # PATCH: Only update fields that were provided
                 update_data = model.model_dump(exclude_unset=True, exclude={self._pk})
 
-                # Validate non-nullable fields: reject explicit null for non-optional fields
+                # Validate non-nullable fields: reject explicit null
+                # for non-optional fields
                 for key, value in update_data.items():
                     if value is None:
-                        # Check if this field was originally optional in the update schema
-                        # (use update_schema, not the read schema, to respect write rules)
+                        # Check if this field was originally optional
+                        # in the update schema (use update_schema, not
+                        # the read schema, to respect write rules)
                         original_field = self.update_schema.model_fields.get(key)
                         if original_field and not is_optional_type(
                             original_field.annotation
@@ -1050,11 +1071,12 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _delete_all(self) -> Callable[..., GetAllResult]:
+    def _delete_all(self) -> Callable[..., Coroutine[Any, Any, GetAllResult]]:
         """Delete all items"""
 
         async def route(db: AsyncSession = Depends(self.db_func)) -> GetAllResult:
-            await db.execute(text(f"delete from {self.db_model.__tablename__}"))
+            table_name = self.db_model.__tablename__  # type: ignore[union-attr]
+            await db.execute(text(f"delete from {table_name}"))
             await db.commit()
             return await self._get_all()(
                 db=db, pagination={"page": 1, "limit": None}, filters=None
@@ -1062,27 +1084,29 @@ class CRUDRouter(APIRouter):
 
         return route
 
-    def _delete_one(self) -> Callable[..., None]:
+    def _delete_one(self) -> Callable[..., Coroutine[Any, Any, None]]:
         """Delete one item by ID"""
 
         async def route(
-            item_id: self._pk_type,
-            db: AsyncSession = Depends(self.db_func),  # type: ignore
-            user: Any = self.current_user_depends,  # type: ignore
+            item_id: self._pk_type,  # type: ignore[name-defined]
+            db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,
         ) -> None:
             # Permission check
-            if self.permission_checker and "delete_one" in self.permissions:
-                if user and not self.permission_checker(
-                    user, self.permissions["delete_one"]
-                ):
-                    raise HTTPException(403, "No permission to delete resources")
+            if (
+                self.permission_checker
+                and "delete_one" in self.permissions
+                and user
+                and not self.permission_checker(user, self.permissions["delete_one"])
+            ):
+                raise HTTPException(403, "No permission to delete resources")
 
             # Access check
             if self.access_checker and user:
                 await self.access_checker(item_id, user, db)
 
             # Verify item exists first
-            db_model = await db.get(self.db_model, item_id)
+            db_model = await db.get(self.db_model, item_id)  # type: ignore[arg-type]
             if not db_model:
                 raise NOT_FOUND from None
 
