@@ -3,6 +3,7 @@ from datetime import date, datetime
 import math
 from types import UnionType
 from typing import (
+    Annotated,
     Any,
     AsyncGenerator,
     Callable,
@@ -19,6 +20,14 @@ from typing import (
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
 from pydantic import BaseModel, create_model
+
+# Import Pydantic string-like types for filter generation
+try:
+    from pydantic import AnyUrl, EmailStr, HttpUrl
+    PYDANTIC_STRING_TYPES = (EmailStr, AnyUrl, HttpUrl)
+except ImportError:
+    # If specific types aren't available, use empty tuple
+    PYDANTIC_STRING_TYPES = ()
 
 try:
     from sqlalchemy import desc, func, text
@@ -136,10 +145,17 @@ def is_optional_type(annotation: Any) -> bool:
 
 
 def extract_python_type(field_type: Any) -> Any:
-    """Extract base type from Optional types"""
+    """Extract base type from Optional types and Annotated types"""
     origin = get_origin(field_type)
     if origin is None:
         return field_type
+
+    # Handle Annotated types: Annotated[T, metadata] -> T
+    if origin is Annotated:
+        args = get_args(field_type)
+        if args:
+            # Recursively extract in case we have Annotated[Optional[T], ...]
+            return extract_python_type(args[0])
 
     args = get_args(field_type)
     if (
@@ -147,9 +163,42 @@ def extract_python_type(field_type: Any) -> Any:
         and len(args) == 2
         and type(None) in args
     ):
-        return next(arg for arg in args if arg is not type(None))
+        # Get the non-None type and recursively extract
+        # (in case it's Annotated)
+        non_none_type = next(arg for arg in args if arg is not type(None))
+        return extract_python_type(non_none_type)
 
     return origin
+
+
+def _is_string_like_type(field_type: Any) -> bool:
+    """Check if a type is string or string-like (EmailStr, HttpUrl, etc.)
+
+    Returns True for:
+    - str (base Python type)
+    - Pydantic string types (EmailStr, HttpUrl, AnyUrl, etc.)
+    """
+    # Check for base str type
+    if field_type is str:
+        return True
+
+    # Check for known Pydantic string types
+    if PYDANTIC_STRING_TYPES and isinstance(field_type, type):
+        try:
+            if issubclass(field_type, PYDANTIC_STRING_TYPES):
+                return True
+        except TypeError:
+            # Some types like Annotated[] can't be used with issubclass
+            pass
+
+    # Fallback: check if type name suggests it's a string type
+    # This catches custom string validators and other Pydantic string types
+    if hasattr(field_type, '__name__'):
+        name = field_type.__name__
+        if 'Str' in name or 'Email' in name or 'Url' in name or 'Uri' in name:
+            return True
+
+    return False
 
 
 def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
@@ -170,7 +219,7 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
             if gte not in base_fields:
                 new_fields[gte] = (Optional[field_type], None)
 
-        elif field_type is str:
+        elif _is_string_like_type(field_type):
             like = f"{field_name}__like"
             if like not in base_fields:
                 new_fields[like] = (Optional[str], None)

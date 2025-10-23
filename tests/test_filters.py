@@ -1,14 +1,22 @@
 """Tests for filter generation and filtering functionality"""
 
 from datetime import date, datetime
-from typing import Optional, Union
+from typing import Annotated, Optional, Union
 
 from pydantic import BaseModel
 
 from fastapi_crudrouter.crud_router import (
     extract_python_type,
     generate_fields_with_suffixes,
+    _is_string_like_type,
 )
+
+# Import Pydantic string types for testing
+try:
+    from pydantic import EmailStr, HttpUrl, AnyUrl
+    PYDANTIC_TYPES_AVAILABLE = True
+except ImportError:
+    PYDANTIC_TYPES_AVAILABLE = False
 
 
 class TestExtractPythonType:
@@ -54,6 +62,153 @@ class TestExtractPythonType:
         """Test that simple int type returns int"""
         result = extract_python_type(int)
         assert result is int
+
+    def test_extract_from_annotated_str(self):
+        """Test extraction of str from Annotated[str, metadata]"""
+        result = extract_python_type(Annotated[str, "metadata"])
+        assert result is str
+
+    def test_extract_from_optional_annotated_str(self):
+        """Test extraction from Optional[Annotated[str, metadata]]"""
+        result = extract_python_type(Optional[Annotated[str, "metadata"]])
+        assert result is str
+
+    def test_extract_from_annotated_int(self):
+        """Test extraction of int from Annotated[int, metadata]"""
+        result = extract_python_type(Annotated[int, "metadata"])
+        assert result is int
+
+    def test_extract_from_optional_pydantic_httpurl(self):
+        """Test extraction from Optional[HttpUrl] field annotation"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        # HttpUrl in a Pydantic model becomes Optional[Annotated[Url, ...]]
+        class TestSchema(BaseModel):
+            url: Optional[HttpUrl] = None
+
+        field_type = TestSchema.model_fields['url'].annotation
+        result = extract_python_type(field_type)
+
+        # Should extract the actual Url type, not Annotated
+        assert hasattr(result, '__name__')
+        assert 'Url' in result.__name__
+
+    def test_extract_from_optional_pydantic_emailstr(self):
+        """Test extraction from Optional[EmailStr] field annotation"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        class TestSchema(BaseModel):
+            email: Optional[EmailStr] = None
+
+        field_type = TestSchema.model_fields['email'].annotation
+        result = extract_python_type(field_type)
+
+        # Should extract EmailStr type
+        assert result is EmailStr
+
+
+class TestIsStringLikeType:
+    """Tests unitaires pour _is_string_like_type()"""
+
+    def test_base_str_type(self):
+        """Test that base str type returns True"""
+        assert _is_string_like_type(str) is True
+
+    def test_int_type(self):
+        """Test that int type returns False"""
+        assert _is_string_like_type(int) is False
+
+    def test_date_type(self):
+        """Test that date type returns False"""
+        assert _is_string_like_type(date) is False
+
+    def test_datetime_type(self):
+        """Test that datetime type returns False"""
+        assert _is_string_like_type(datetime) is False
+
+    def test_float_type(self):
+        """Test that float type returns False"""
+        assert _is_string_like_type(float) is False
+
+    def test_bool_type(self):
+        """Test that bool type returns False"""
+        assert _is_string_like_type(bool) is False
+
+    def test_emailstr_type(self):
+        """Test that EmailStr type returns True"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        # EmailStr stays as EmailStr in field annotations
+        class TestSchema(BaseModel):
+            email: EmailStr
+
+        field_type = extract_python_type(
+            TestSchema.model_fields['email'].annotation
+        )
+        assert _is_string_like_type(field_type) is True
+
+    def test_httpurl_type(self):
+        """Test that HttpUrl type returns True"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        # HttpUrl becomes pydantic_core.Url in field annotations
+        class TestSchema(BaseModel):
+            url: HttpUrl
+
+        field_type = extract_python_type(
+            TestSchema.model_fields['url'].annotation
+        )
+        assert _is_string_like_type(field_type) is True
+
+    def test_anyurl_type(self):
+        """Test that AnyUrl type returns True"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        # AnyUrl becomes pydantic_core.Url in field annotations
+        class TestSchema(BaseModel):
+            url: AnyUrl
+
+        field_type = extract_python_type(
+            TestSchema.model_fields['url'].annotation
+        )
+        assert _is_string_like_type(field_type) is True
+
+    def test_none_type(self):
+        """Test that None type returns False"""
+        assert _is_string_like_type(type(None)) is False
+
+    def test_custom_class(self):
+        """Test that custom class returns False"""
+        class CustomClass:
+            pass
+        assert _is_string_like_type(CustomClass) is False
+
+    def test_type_with_str_in_name(self):
+        """Test that custom type with 'Str' in name returns True"""
+        # Create a mock type with 'Str' in its name
+        class CustomStr:
+            __name__ = "CustomStr"
+
+        assert _is_string_like_type(CustomStr) is True
+
+    def test_type_with_email_in_name(self):
+        """Test that custom type with 'Email' in name returns True"""
+        class CustomEmail:
+            __name__ = "CustomEmail"
+
+        assert _is_string_like_type(CustomEmail) is True
+
+    def test_type_with_url_in_name(self):
+        """Test that custom type with 'Url' in name returns True"""
+        class CustomUrl:
+            __name__ = "CustomUrl"
+
+        assert _is_string_like_type(CustomUrl) is True
 
 
 class TestGenerateFieldsWithSuffixes:
@@ -221,6 +376,80 @@ class TestGenerateFieldsWithSuffixes:
         # created_at already has both operators, so should not add them
         assert "created_at__gte" not in result
         assert "created_at__lte" not in result
+
+    def test_emailstr_field_generates_like_suffix(self):
+        """Test that EmailStr field generates __like suffix"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        class TestSchema(BaseModel):
+            email: EmailStr
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "email__like" in result
+        assert result["email__like"] == (Optional[str], None)
+
+    def test_optional_emailstr_field_generates_like_suffix(self):
+        """Test that Optional[EmailStr] field generates __like suffix"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        class TestSchema(BaseModel):
+            email: Optional[EmailStr] = None
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "email__like" in result
+        assert result["email__like"] == (Optional[str], None)
+
+    def test_httpurl_field_generates_like_suffix(self):
+        """Test that HttpUrl field generates __like suffix"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        class TestSchema(BaseModel):
+            website: HttpUrl
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "website__like" in result
+        assert result["website__like"] == (Optional[str], None)
+
+    def test_anyurl_field_generates_like_suffix(self):
+        """Test that AnyUrl field generates __like suffix"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        class TestSchema(BaseModel):
+            url: AnyUrl
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "url__like" in result
+        assert result["url__like"] == (Optional[str], None)
+
+    def test_mixed_str_and_emailstr_fields(self):
+        """Test mixed str and EmailStr fields both generate __like"""
+        if not PYDANTIC_TYPES_AVAILABLE:
+            return
+
+        class TestSchema(BaseModel):
+            name: str
+            email: EmailStr
+            website: Optional[HttpUrl] = None
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        # All string-like fields should generate __like
+        assert "name__like" in result
+        assert "email__like" in result
+        assert "website__like" in result
 
 
 class TestFilterIntegration:
