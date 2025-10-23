@@ -135,7 +135,9 @@ def test_patch(client, url: str = URL, model: Dict = None, id_key: str = "id"):
     assert updated2["type"] == model["type"]  # Should still be original value
 
 
-def test_patch_null_validation(client, url: str = URL, model: Dict = None, id_key: str = "id"):
+def test_patch_null_validation(
+    client, url: str = URL, model: Dict = None, id_key: str = "id"
+):
     """Test that PATCH rejects explicit null for non-nullable fields but allows omission"""
     test_get(client, url, expected_length=0)
 
@@ -155,15 +157,21 @@ def test_patch_null_validation(client, url: str = URL, model: Dict = None, id_ke
     # Test 2: Cannot send explicit null for non-nullable field (should fail with 422)
     null_update = {"thickness": None}
     res = client.patch(f"{url}/{data[id_key]}", json=null_update)
-    assert res.status_code == 422, f"Expected 422 for null in non-nullable field, got {res.status_code}"
+    assert res.status_code == 422, (
+        f"Expected 422 for null in non-nullable field, got {res.status_code}"
+    )
     error = res.json()
-    assert "thickness" in error.get("detail", "").lower(), "Error should mention 'thickness'"
+    assert "thickness" in error.get("detail", "").lower(), (
+        "Error should mention 'thickness'"
+    )
 
     # Test 3: Verify the resource was not modified by the failed update
     res = client.get(f"{url}/{data[id_key]}")
     assert res.status_code == 200
     retrieved = res.json()
-    assert retrieved["thickness"] == model["thickness"]  # Should still be original value
+    assert (
+        retrieved["thickness"] == model["thickness"]
+    )  # Should still be original value
 
 
 def test_delete_one(client, url: str = URL, model: Dict = None, id_key: str = "id"):
@@ -247,10 +255,10 @@ def test_patch_schema_derives_from_update_schema():
     from update_schema (e.g., sensitive fields like is_admin, created_at, etc.).
     """
     from pydantic import BaseModel
-    from fastapi_crudrouter import CRUDRouter
-    from sqlalchemy import Column, Integer, String, Boolean
+    from sqlalchemy import Boolean, Column, Integer, String
     from sqlalchemy.ext.declarative import declarative_base
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from fastapi_crudrouter import CRUDRouter
 
     Base = declarative_base()
 
@@ -329,18 +337,18 @@ def test_patch_preserves_validators():
         name: str
         email: str
 
-        @field_validator('email')
+        @field_validator("email")
         @classmethod
         def validate_email(cls, v):
-            if v and not v.endswith('@company.com'):
-                raise ValueError('Only company emails allowed')
+            if v and not v.endswith("@company.com"):
+                raise ValueError("Only company emails allowed")
             return v  # Must return the value
 
-        @model_validator(mode='after')
+        @model_validator(mode="after")
         @classmethod
         def check_not_blacklisted(cls, model):
-            if model.name and model.name.lower() in ['admin', 'root', 'system']:
-                raise ValueError('Name is blacklisted')
+            if model.name and model.name.lower() in ["admin", "root", "system"]:
+                raise ValueError("Name is blacklisted")
             return model
 
     from fastapi_crudrouter.crud_router import optional_schema_factory
@@ -380,7 +388,9 @@ def test_patch_preserves_validators():
     partial_invalid = {"email": "attacker@evil.com"}
     try:
         patch_schema(**partial_invalid)
-        assert False, "Should have raised ValidationError for invalid email in partial update"
+        assert False, (
+            "Should have raised ValidationError for invalid email in partial update"
+        )
     except ValidationError as e:
         assert "company emails" in str(e).lower() or "email" in str(e).lower()
 
@@ -429,7 +439,11 @@ def test_patch_preserves_field_aliases():
         patch_schema(**invalid_email)
         assert False, "Should have raised ValidationError for min_length constraint"
     except ValidationError as e:
-        assert "at least 5 characters" in str(e).lower() or "min_length" in str(e).lower() or "emailaddress" in str(e).lower()
+        assert (
+            "at least 5 characters" in str(e).lower()
+            or "min_length" in str(e).lower()
+            or "emailaddress" in str(e).lower()
+        )
 
     # Test 5: Verify aliases are actually in the model fields
     assert patch_schema.model_fields["full_name"].alias == "fullName"
@@ -444,9 +458,10 @@ def test_patch_null_check_uses_update_schema():
     by exploiting differences between read and write schemas.
     """
     from pydantic import BaseModel
-    from fastapi_crudrouter import CRUDRouter
     from sqlalchemy import Column, Integer, String
     from sqlalchemy.ext.declarative import declarative_base
+
+    from fastapi_crudrouter import CRUDRouter
 
     Base = declarative_base()
 
@@ -500,6 +515,7 @@ def test_patch_null_check_uses_update_schema():
     # Verify that password in patch_schema is Optional (for partial updates)
     # but the null guard should still reject explicit null based on update_schema
     from fastapi_crudrouter.crud_router import is_optional_type
+
     password_annotation = router.patch_schema.model_fields["password"].annotation
     assert is_optional_type(password_annotation)  # Should be Optional for PATCH
 
@@ -511,9 +527,10 @@ def test_patch_null_check_required_field_different_optionality():
     The null guard must respect the update schema's requirement.
     """
     from pydantic import BaseModel
-    from fastapi_crudrouter import CRUDRouter
     from sqlalchemy import Column, Integer, String
     from sqlalchemy.ext.declarative import declarative_base
+
+    from fastapi_crudrouter import CRUDRouter
 
     Base = declarative_base()
 

@@ -18,7 +18,7 @@ from typing import (
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, create_model
 
 try:
     from sqlalchemy import desc, func, text
@@ -120,7 +120,7 @@ def optional_schema_factory(
         f"{schema_cls.__name__}{name}",
         __base__=schema_cls,
         __module__=schema_cls.__module__,
-        **fields
+        **fields,
     )
 
     return new_model
@@ -142,7 +142,11 @@ def extract_python_type(field_type: Any) -> Any:
         return field_type
 
     args = get_args(field_type)
-    if origin is UnionType and len(args) == 2 and type(None) in args:
+    if (
+        (origin is UnionType or origin is Union)
+        and len(args) == 2
+        and type(None) in args
+    ):
         return next(arg for arg in args if arg is not type(None))
 
     return origin
@@ -152,6 +156,10 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
     """Generate filter fields with special operators"""
     new_fields = {}
     for field_name, field_info in base_fields.items():
+        # Skip operator fields (ending with __like, __gte, __lte)
+        if field_name.endswith(("__like", "__gte", "__lte")):
+            continue
+
         field_type = extract_python_type(field_info.annotation)
         if field_type in (date, datetime):
             lte = f"{field_name}__lte"
@@ -287,7 +295,9 @@ class CRUDRouter(APIRouter):
         self.patch_schema = (
             patch_schema
             if patch_schema
-            else optional_schema_factory(self.update_schema, pk_field_name=self._pk, name="Patch")
+            else optional_schema_factory(
+                self.update_schema, pk_field_name=self._pk, name="Patch"
+            )
         )
         self.get_all_schema = get_all_schema if get_all_schema else schema
 
@@ -664,7 +674,9 @@ class CRUDRouter(APIRouter):
 
             # Permission check
             if self.permission_checker and "get_all" in self.permissions:
-                if user and not self.permission_checker(user, self.permissions["get_all"]):
+                if user and not self.permission_checker(
+                    user, self.permissions["get_all"]
+                ):
                     raise HTTPException(403, "No permission to view resources")
 
             base_class_fields, join_fields, join_list_fields, custom_func_fields = (
@@ -686,7 +698,9 @@ class CRUDRouter(APIRouter):
                         getattr(self.db_model, filter_key).ilike(f"%{v}%")
                     )
                 elif filter_op == "in":
-                    query_src = query_src.where(getattr(self.db_model, filter_key).in_(v))
+                    query_src = query_src.where(
+                        getattr(self.db_model, filter_key).in_(v)
+                    )
                 return query_src
 
             def query_where(query_src: Any) -> Any:
@@ -796,7 +810,9 @@ class CRUDRouter(APIRouter):
         ) -> Model:
             # Permission check
             if self.permission_checker and "get_one" in self.permissions:
-                if user and not self.permission_checker(user, self.permissions["get_one"]):
+                if user and not self.permission_checker(
+                    user, self.permissions["get_one"]
+                ):
                     raise HTTPException(403, "No permission to view this resource")
 
             # Access check
@@ -839,7 +855,9 @@ class CRUDRouter(APIRouter):
         ) -> Model:
             # Permission check
             if self.permission_checker and "create" in self.permissions:
-                if user and not self.permission_checker(user, self.permissions["create"]):
+                if user and not self.permission_checker(
+                    user, self.permissions["create"]
+                ):
                     raise HTTPException(403, "No permission to create resources")
 
             # Validation métier
@@ -851,7 +869,9 @@ class CRUDRouter(APIRouter):
                 db.add(db_model)
                 await db.commit()
                 await db.refresh(db_model)
-                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db, user=user)
+                return await self._get_one()(
+                    item_id=getattr(db_model, self._pk), db=db, user=user
+                )
             except IntegrityError as e:
                 await db.rollback()
                 self._raise(e)
@@ -873,7 +893,9 @@ class CRUDRouter(APIRouter):
         ) -> Model:
             # Permission check
             if self.permission_checker and "update" in self.permissions:
-                if user and not self.permission_checker(user, self.permissions["update"]):
+                if user and not self.permission_checker(
+                    user, self.permissions["update"]
+                ):
                     raise HTTPException(403, "No permission to update resources")
 
             # Access check
@@ -905,7 +927,9 @@ class CRUDRouter(APIRouter):
                 await db.commit()
                 await db.refresh(db_model)
 
-                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db, user=user)
+                return await self._get_one()(
+                    item_id=getattr(db_model, self._pk), db=db, user=user
+                )
             except IntegrityError as e:
                 await db.rollback()
                 self._raise(e)
@@ -927,7 +951,9 @@ class CRUDRouter(APIRouter):
         ) -> Model:
             # Permission check
             if self.permission_checker and "update" in self.permissions:
-                if user and not self.permission_checker(user, self.permissions["update"]):
+                if user and not self.permission_checker(
+                    user, self.permissions["update"]
+                ):
                     raise HTTPException(403, "No permission to update resources")
 
             # Access check
@@ -952,10 +978,11 @@ class CRUDRouter(APIRouter):
                         # Check if this field was originally optional in the update schema
                         # (use update_schema, not the read schema, to respect write rules)
                         original_field = self.update_schema.model_fields.get(key)
-                        if original_field and not is_optional_type(original_field.annotation):
+                        if original_field and not is_optional_type(
+                            original_field.annotation
+                        ):
                             raise HTTPException(
-                                422,
-                                detail=f"Field '{key}' cannot be null"
+                                422, detail=f"Field '{key}' cannot be null"
                             )
 
                 for key, value in update_data.items():
@@ -965,7 +992,9 @@ class CRUDRouter(APIRouter):
                 await db.commit()
                 await db.refresh(db_model)
 
-                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db, user=user)
+                return await self._get_one()(
+                    item_id=getattr(db_model, self._pk), db=db, user=user
+                )
             except IntegrityError as e:
                 await db.rollback()
                 self._raise(e)
@@ -994,7 +1023,9 @@ class CRUDRouter(APIRouter):
         ) -> None:
             # Permission check
             if self.permission_checker and "delete_one" in self.permissions:
-                if user and not self.permission_checker(user, self.permissions["delete_one"]):
+                if user and not self.permission_checker(
+                    user, self.permissions["delete_one"]
+                ):
                     raise HTTPException(403, "No permission to delete resources")
 
             # Access check
