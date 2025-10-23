@@ -26,8 +26,8 @@ class TestOpenAPISpec:
         assert len(paths) == len(PATH_TAGS)
         for path, method in paths.items():
             # Root paths have 4 methods (GET, OPTIONS, POST, DELETE)
-            # Item paths have 3 methods (GET, PUT, DELETE)
-            expected_methods = 4 if not path.endswith("}") else 3
+            # Item paths have 4 methods (GET, PUT, PATCH, DELETE)
+            expected_methods = 4
             assert len(method) == expected_methods
 
             for m in method:

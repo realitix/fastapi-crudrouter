@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date, datetime
 import math
 from types import UnionType
@@ -17,7 +18,7 @@ from typing import (
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 
 try:
     from sqlalchemy import desc, func, text
@@ -92,6 +93,46 @@ def schema_factory(
                 fields[field_name] = (field_info.annotation, ...)
 
     return create_model(f"{schema_cls.__name__}{name}", **fields)
+
+
+def optional_schema_factory(
+    schema_cls: Type[BaseModel], pk_field_name: str = "id", name: str = "Patch"
+) -> Type[BaseModel]:
+    """Create schema with all fields optional for partial updates (PATCH)
+
+    Preserves all validators and FieldInfo metadata (aliases, constraints, etc.).
+    """
+    fields = {}
+    for field_name, field_info in schema_cls.model_fields.items():
+        if field_name != pk_field_name:
+            # Deep copy the original FieldInfo to preserve all metadata
+            # (alias, validation_alias, constraints, description, etc.)
+            new_field_info = deepcopy(field_info)
+
+            # Modify only what's needed for PATCH: make it optional with None default
+            new_field_info.default = None
+            new_field_info.default_factory = None
+
+            fields[field_name] = (Optional[field_info.annotation], new_field_info)
+
+    # Create new model with __base__ to inherit validators
+    new_model = create_model(
+        f"{schema_cls.__name__}{name}",
+        __base__=schema_cls,
+        __module__=schema_cls.__module__,
+        **fields
+    )
+
+    return new_model
+
+
+def is_optional_type(annotation: Any) -> bool:
+    """Check if a type annotation is Optional (Union with None)"""
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        args = get_args(annotation)
+        return type(None) in args
+    return False
 
 
 def extract_python_type(field_type: Any) -> Any:
@@ -181,6 +222,7 @@ class CRUDRouter(APIRouter):
         db: SessionGenerator,
         create_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
         update_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
+        patch_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
         get_all_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
         filter_schema: Optional[Type[PYDANTIC_SCHEMA]] = None,
         prefix: Optional[str] = None,
@@ -241,6 +283,11 @@ class CRUDRouter(APIRouter):
             update_schema
             if update_schema
             else schema_factory(schema, pk_field_name=self._pk, name="Update")
+        )
+        self.patch_schema = (
+            patch_schema
+            if patch_schema
+            else optional_schema_factory(self.update_schema, pk_field_name=self._pk, name="Patch")
         )
         self.get_all_schema = get_all_schema if get_all_schema else schema
 
@@ -392,12 +439,24 @@ class CRUDRouter(APIRouter):
                 )
 
             if update_route:
+                # PUT route - full replacement
                 self._add_api_route(
                     "/{item_id}",
                     self._update(),
                     methods=["PUT"],
                     response_model=schema,
                     summary="Update One",
+                    dependencies=update_route,
+                    error_responses=[NOT_FOUND],
+                )
+
+                # PATCH route - partial update
+                self._add_api_route(
+                    "/{item_id}",
+                    self._patch(),
+                    methods=["PATCH"],
+                    response_model=schema,
+                    summary="Partially Update One",
                     dependencies=update_route,
                     error_responses=[NOT_FOUND],
                 )
@@ -800,7 +859,11 @@ class CRUDRouter(APIRouter):
         return route
 
     def _update(self) -> Callable[..., Model]:
-        """Update existing item"""
+        """Full update existing item (PUT)
+
+        PUT (RFC 7231): Full replacement - all fields must be provided.
+        Uses update_schema where fields without defaults are required.
+        """
 
         async def route(
             item_id: self._pk_type,  # type: ignore
@@ -826,8 +889,74 @@ class CRUDRouter(APIRouter):
                 if not db_model:
                     raise NOT_FOUND from None
 
-                # Use exclude_unset=True to support partial updates
+                # PUT: Only update fields explicitly provided by the client
+                # to avoid overwriting stored values with schema defaults
+                all_data = model.model_dump(exclude={self._pk})
+                update_data = {
+                    key: value
+                    for key, value in all_data.items()
+                    if key in model.model_fields_set
+                }
+
+                for key, value in update_data.items():
+                    if hasattr(db_model, key):
+                        setattr(db_model, key, value)
+
+                await db.commit()
+                await db.refresh(db_model)
+
+                return await self._get_one()(item_id=getattr(db_model, self._pk), db=db, user=user)
+            except IntegrityError as e:
+                await db.rollback()
+                self._raise(e)
+
+        return route
+
+    def _patch(self) -> Callable[..., Model]:
+        """Partially update existing item (PATCH)
+
+        PATCH (RFC 5789): Partial update - only provided fields are modified.
+        Uses patch_schema where all fields are optional.
+        """
+
+        async def route(
+            item_id: self._pk_type,  # type: ignore
+            model: self.patch_schema,  # type: ignore
+            db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,  # type: ignore
+        ) -> Model:
+            # Permission check
+            if self.permission_checker and "update" in self.permissions:
+                if user and not self.permission_checker(user, self.permissions["update"]):
+                    raise HTTPException(403, "No permission to update resources")
+
+            # Access check
+            if self.access_checker and user:
+                await self.access_checker(item_id, user, db)
+
+            # Validation métier (optionnel)
+            if self.update_validator and user:
+                model = await self.update_validator(model, user, db)
+
+            try:
+                db_model: Model = await db.get(self.db_model, item_id)
+                if not db_model:
+                    raise NOT_FOUND from None
+
+                # PATCH: Only update fields that were provided
                 update_data = model.model_dump(exclude_unset=True, exclude={self._pk})
+
+                # Validate non-nullable fields: reject explicit null for non-optional fields
+                for key, value in update_data.items():
+                    if value is None:
+                        # Check if this field was originally optional in the update schema
+                        # (use update_schema, not the read schema, to respect write rules)
+                        original_field = self.update_schema.model_fields.get(key)
+                        if original_field and not is_optional_type(original_field.annotation):
+                            raise HTTPException(
+                                422,
+                                detail=f"Field '{key}' cannot be null"
+                            )
 
                 for key, value in update_data.items():
                     if hasattr(db_model, key):
