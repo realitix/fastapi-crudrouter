@@ -1,4 +1,4 @@
-from copy import deepcopy
+from copy import copy
 from datetime import date, datetime
 import math
 from types import UnionType
@@ -119,13 +119,14 @@ def optional_schema_factory(
     """Create schema with all fields optional for partial updates (PATCH)
 
     Preserves all validators and FieldInfo metadata (aliases, constraints, etc.).
+    Uses shallow copy which is faster than deepcopy while preserving all attributes.
     """
     fields = {}
     for field_name, field_info in schema_cls.model_fields.items():
         if field_name != pk_field_name:
-            # Deep copy the original FieldInfo to preserve all metadata
-            # (alias, validation_alias, constraints, description, etc.)
-            new_field_info = deepcopy(field_info)
+            # Shallow copy the FieldInfo - faster than deepcopy and preserves
+            # all attributes including metadata (which contains constraints)
+            new_field_info = copy(field_info)
 
             # Modify only what's needed for PATCH: make it optional with None default
             new_field_info.default = None
@@ -344,6 +345,12 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             )
         self._pk: str = pk_columns[0]
         self._pk_type: Any = get_pk_type(schema, self._pk)
+
+        # Performance optimization: Cache model columns to avoid repeated getattr
+        # Use col.key (Python attribute name) not col.name (DB column name)
+        self._model_columns_cache: dict[str, Any] = {
+            col.key: getattr(db_model, col.key) for col in sa_inspect(db_model).columns
+        }
 
         # Set up schemas
         self.create_schema = (
@@ -620,6 +627,13 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             return None
         return metadata[0]
 
+    def _get_model_column(self, field_name: str) -> Any:
+        """Get model column with caching for performance"""
+        if field_name in self._model_columns_cache:
+            return self._model_columns_cache[field_name]
+        # Fallback to getattr if not in cache
+        return getattr(self.db_model, field_name)
+
     def get_fields(self, schema) -> Any:
         """Parse schema fields for joins and custom functions"""
 
@@ -676,7 +690,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     async def compute_subdata(
         self, db: AsyncSession, model_id: Any, join_list_fields: dict
     ) -> Any:
-        """Compute subdata for list joins"""
+        """Compute subdata for list joins (single model)"""
         subdata: dict[str, Any] = {}
         for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
             subdata[field] = []
@@ -688,6 +702,63 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             for subrow in subres:
                 subdata[field].append(read_cls(**subrow._asdict()))
         return subdata
+
+    async def compute_subdata_batch(
+        self, db: AsyncSession, model_ids: List[Any], join_list_fields: dict
+    ) -> dict[Any, dict[str, Any]]:
+        """Compute subdata for multiple models at once (solves N+1 query problem)
+
+        This method batches all subdata queries to avoid N+1 query performance issues.
+        Instead of executing one query per model, it executes queries in chunks to
+        respect database bind parameter limits (e.g., SQLite's 999 limit).
+        """
+        # Initialize result dictionary with empty subdatas
+        result: dict[Any, dict[str, Any]] = {mid: {} for mid in model_ids}
+
+        if not join_list_fields or not model_ids:
+            return result
+
+        # Chunk size to avoid exceeding database bind parameter limits
+        # SQLite default limit is 999, so 500 gives a safe margin
+        CHUNK_SIZE = 500
+
+        # Process each join_list field
+        for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
+            # Group results by foreign key value
+            grouped: dict[Any, list] = {mid: [] for mid in model_ids}
+
+            # Process model_ids in chunks to avoid database limits
+            for i in range(0, len(model_ids), CHUNK_SIZE):
+                chunk = model_ids[i : i + CHUNK_SIZE]
+
+                # Query for this chunk of IDs
+                subres = (
+                    await db.execute(
+                        select(*attribute.__table__.columns).where(
+                            foreign_key.in_(chunk)
+                        )
+                    )
+                ).all()
+
+                # Group results from this chunk
+                for subrow in subres:
+                    # pylint: disable=protected-access
+                    row_dict = (
+                        subrow._asdict()
+                        if hasattr(subrow, "_asdict")
+                        else dict(subrow._mapping)
+                    )
+                    # Get the foreign key value from the subrow
+                    # Use foreign_key.key (ORM attribute) to match row_dict keys
+                    fk_value = row_dict.get(foreign_key.key)
+                    if fk_value in grouped:
+                        grouped[fk_value].append(read_cls(**row_dict))
+
+            # Assign grouped results to the final result
+            for mid in model_ids:
+                result[mid][field] = grouped[mid]
+
+        return result
 
     def compute_custom_func(self, query, custom_func_fields: dict) -> Any:
         """Apply custom functions to query"""
@@ -755,18 +826,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
             def special_filter(query_src: Any, k: str, v: Any):
                 filter_key, filter_op = k.split("__")
+                # Use cached column access for performance
+                col = self._get_model_column(filter_key)
                 if filter_op == "gte":
-                    query_src = query_src.where(getattr(self.db_model, filter_key) >= v)
+                    query_src = query_src.where(col >= v)
                 elif filter_op == "lte":
-                    query_src = query_src.where(getattr(self.db_model, filter_key) <= v)
+                    query_src = query_src.where(col <= v)
                 elif filter_op == "like":
-                    query_src = query_src.where(
-                        getattr(self.db_model, filter_key).ilike(f"%{v}%")
-                    )
+                    query_src = query_src.where(col.ilike(f"%{v}%"))
                 elif filter_op == "in":
-                    query_src = query_src.where(
-                        getattr(self.db_model, filter_key).in_(v)
-                    )
+                    query_src = query_src.where(col.in_(v))
                 return query_src
 
             def query_where(query_src: Any) -> Any:
@@ -778,7 +847,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         if "__" in k:
                             query_src = special_filter(query_src, k, v)
                         else:
-                            query_src = query_src.where(getattr(self.db_model, k) == v)
+                            # Use cached column access for performance
+                            col = self._get_model_column(k)
+                            query_src = query_src.where(col == v)
 
                 # Apply user filters
                 if filters and filters is not None:
@@ -806,7 +877,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         elif "__" in k:
                             query_src = special_filter(query_src, k, v)
                         else:
-                            query_src = query_src.where(getattr(self.db_model, k) == v)
+                            # Use cached column access for performance
+                            col = self._get_model_column(k)
+                            query_src = query_src.where(col == v)
                 return query_src
 
             query = query_where(query).select_from(self.db_model)
@@ -818,7 +891,8 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             def get_order_by() -> Any:
                 order_by = pagination.get("order_by")
                 if not order_by:
-                    return desc(getattr(self.db_model, self._pk))
+                    # Use cached column access for performance
+                    return desc(self._get_model_column(self._pk))
 
                 order_by = order_by.split("__")
                 if len(order_by) == 2:
@@ -829,13 +903,14 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                 # Validation: Reject private/dunder attributes (security)
                 if order_by_field.startswith("_"):
-                    return desc(getattr(self.db_model, self._pk))
+                    return desc(self._get_model_column(self._pk))
 
                 # Validation: Check that field exists
                 if not hasattr(self.db_model, order_by_field):
-                    return desc(getattr(self.db_model, self._pk))
+                    return desc(self._get_model_column(self._pk))
 
-                field_attr = getattr(self.db_model, order_by_field)
+                # Use cached column access for performance
+                field_attr = self._get_model_column(order_by_field)
 
                 # Validation: Only allow valid directions
                 if order_by_direction not in ("ASC", "DESC"):
@@ -846,24 +921,49 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                 return field_attr
 
+            # Execute queries sequentially (AsyncSession is not safe for concurrent use)
             result = await db.execute(
                 query.order_by(get_order_by()).limit(limit).offset(skip)
             )
             rows = result.all()
 
-            db_models: List[Model] = []
-            for row in rows:
-                # pylint: disable=protected-access
-                row_dict = (
-                    row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
-                )
-                pk_value = row_dict.get(self._pk, getattr(row, self._pk, None))
-                subdata = await self.compute_subdata(db, pk_value, join_list_fields)
-                model = self.get_all_schema(**row_dict, **subdata)
-                db_models.append(model)
-
             count_result = (await db.execute(query_count)).first()
             count = count_result[0] if count_result else 0
+
+            # Performance optimization: Use batch loading to avoid N+1 queries
+            db_models: List[Model] = []
+            if join_list_fields:
+                # Extract all primary keys first
+                model_ids = []
+                rows_data = []
+                for row in rows:
+                    # pylint: disable=protected-access
+                    row_dict = (
+                        row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
+                    )
+                    pk_value = row_dict.get(self._pk, getattr(row, self._pk, None))
+                    model_ids.append(pk_value)
+                    rows_data.append(row_dict)
+
+                # Batch load all subdata in one call (solves N+1 problem)
+                batch_subdata = await self.compute_subdata_batch(
+                    db, model_ids, join_list_fields
+                )
+
+                # Build models with pre-loaded subdata
+                for row_dict, pk_value in zip(rows_data, model_ids):
+                    subdata = batch_subdata.get(pk_value, {})
+                    model = self.get_all_schema(**row_dict, **subdata)
+                    db_models.append(model)
+            else:
+                # No joins, simpler path
+                for row in rows:
+                    # pylint: disable=protected-access
+                    row_dict = (
+                        row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
+                    )
+                    model = self.get_all_schema(**row_dict)
+                    db_models.append(model)
 
             # Always return pagination format
             return {
