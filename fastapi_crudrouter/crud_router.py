@@ -1,9 +1,6 @@
-from copy import copy
-from datetime import date, datetime
 import math
 from types import UnionType
 from typing import (
-    Annotated,
     Any,
     AsyncGenerator,
     Callable,
@@ -23,14 +20,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
 from pydantic import BaseModel, create_model
 
-# Import Pydantic string-like types for filter generation
-try:
-    from pydantic import AnyUrl, EmailStr, HttpUrl
-
-    PYDANTIC_STRING_TYPES: tuple = (EmailStr, AnyUrl, HttpUrl)
-except ImportError:
-    # If specific types aren't available, use empty tuple
-    PYDANTIC_STRING_TYPES = ()
+from .schema_factory import (
+    create_filter,
+    get_pk_type,
+    is_optional_type,
+    optional_schema_factory,
+    schema_factory,
+)
 
 try:
     from sqlalchemy import delete, desc, func
@@ -54,15 +50,6 @@ PAGINATION = dict[str, Any]
 PYDANTIC_SCHEMA = BaseModel  # pylint: disable=invalid-name
 
 NOT_FOUND = HTTPException(404, "Item not found")
-
-
-def get_pk_type(schema: Type[BaseModel], pk_field: str) -> Any:
-    """Extract primary key type from schema"""
-    try:
-        field_annotation = schema.model_fields[pk_field].annotation
-        return field_annotation if field_annotation is not None else int
-    except (KeyError, AttributeError):
-        return int
 
 
 def pagination_factory(max_limit: Optional[int] = None):
@@ -98,160 +85,6 @@ def pagination_factory(max_limit: Optional[int] = None):
     return Depends(paginate)
 
 
-def schema_factory(
-    schema_cls: Type[BaseModel], pk_field_name: str = "id", name: str = "Create"
-) -> Type[BaseModel]:
-    """Create schema without primary key for create/update operations"""
-    fields: dict[str, Any] = {}
-    for field_name, field_info in schema_cls.model_fields.items():
-        if field_name != pk_field_name:
-            if field_info.default is not None:
-                fields[field_name] = (field_info.annotation, field_info.default)
-            else:
-                fields[field_name] = (field_info.annotation, ...)
-
-    return create_model(f"{schema_cls.__name__}{name}", **fields)
-
-
-def optional_schema_factory(
-    schema_cls: Type[BaseModel], pk_field_name: str = "id", name: str = "Patch"
-) -> Type[BaseModel]:
-    """Create schema with all fields optional for partial updates (PATCH)
-
-    Preserves all validators and FieldInfo metadata (aliases, constraints, etc.).
-    Uses shallow copy which is faster than deepcopy while preserving all attributes.
-    """
-    fields = {}
-    for field_name, field_info in schema_cls.model_fields.items():
-        if field_name != pk_field_name:
-            # Shallow copy the FieldInfo - faster than deepcopy and preserves
-            # all attributes including metadata (which contains constraints)
-            new_field_info = copy(field_info)
-
-            # Modify only what's needed for PATCH: make it optional with None default
-            new_field_info.default = None
-            new_field_info.default_factory = None
-
-            fields[field_name] = (Optional[field_info.annotation], new_field_info)
-
-    # Create new model with __base__ to inherit validators
-    new_model = create_model(  # type: ignore[call-overload]
-        f"{schema_cls.__name__}{name}",
-        __base__=schema_cls,
-        __module__=schema_cls.__module__,
-        **fields,
-    )
-
-    return new_model
-
-
-def is_optional_type(annotation: Any) -> bool:
-    """Check if a type annotation is Optional (Union with None)"""
-    origin = get_origin(annotation)
-    if origin is Union or origin is UnionType:
-        args = get_args(annotation)
-        return type(None) in args
-    return False
-
-
-def extract_python_type(field_type: Any) -> Any:
-    """Extract base type from Optional types and Annotated types"""
-    origin = get_origin(field_type)
-    if origin is None:
-        return field_type
-
-    # Handle Annotated types: Annotated[T, metadata] -> T
-    if origin is Annotated:
-        args = get_args(field_type)
-        if args:
-            # Recursively extract in case we have Annotated[Optional[T], ...]
-            return extract_python_type(args[0])
-
-    args = get_args(field_type)
-    if (
-        (origin is UnionType or origin is Union)
-        and len(args) == 2
-        and type(None) in args
-    ):
-        # Get the non-None type and recursively extract
-        # (in case it's Annotated)
-        non_none_type = next(arg for arg in args if arg is not type(None))
-        return extract_python_type(non_none_type)
-
-    return origin
-
-
-def _is_string_like_type(field_type: Any) -> bool:
-    """Check if a type is string or string-like (EmailStr, HttpUrl, etc.)
-
-    Returns True for:
-    - str (base Python type)
-    - Pydantic string types (EmailStr, HttpUrl, AnyUrl, etc.)
-    """
-    # Check for base str type
-    if field_type is str:
-        return True
-
-    # Check for known Pydantic string types
-    if PYDANTIC_STRING_TYPES and isinstance(field_type, type):
-        try:
-            if issubclass(field_type, PYDANTIC_STRING_TYPES):
-                return True
-        except TypeError:
-            # Some types like Annotated[] can't be used with issubclass
-            pass
-
-    # Fallback: check if type name suggests it's a string type
-    # This catches custom string validators and other Pydantic string types
-    if hasattr(field_type, "__name__"):
-        name = field_type.__name__
-        if "Str" in name or "Email" in name or "Url" in name or "Uri" in name:
-            return True
-
-    return False
-
-
-def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
-    """Generate filter fields with special operators"""
-    new_fields = {}
-    for field_name, field_info in base_fields.items():
-        # Skip operator fields (ending with __like, __gte, __lte)
-        if field_name.endswith(("__like", "__gte", "__lte")):
-            continue
-
-        field_type = extract_python_type(field_info.annotation)
-        if field_type in (date, datetime):
-            lte = f"{field_name}__lte"
-            if lte not in base_fields:
-                new_fields[lte] = (Optional[field_type], None)
-
-            gte = f"{field_name}__gte"
-            if gte not in base_fields:
-                new_fields[gte] = (Optional[field_type], None)
-
-        elif _is_string_like_type(field_type):
-            like = f"{field_name}__like"
-            if like not in base_fields:
-                new_fields[like] = (Optional[str], None)
-
-    return new_fields
-
-
-def create_filter(base_model: type[PYDANTIC_SCHEMA]) -> type[PYDANTIC_SCHEMA]:
-    """Create filter schema with special operators"""
-    base_fields = base_model.model_fields
-    dynamic_fields = generate_fields_with_suffixes(base_fields)
-
-    return create_model(  # type: ignore[call-overload]
-        base_model.__name__,
-        __base__=base_model,
-        **{
-            name: (annotation, default)
-            for name, (annotation, default) in dynamic_fields.items()
-        },
-    )
-
-
 def find_join_condition(from_cls, target_attr):
     """Find join condition between tables"""
     target_cls = target_attr.class_
@@ -282,7 +115,7 @@ class GetAllResult(TypedDict):
 class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     """Simplified CRUD Router for SQLAlchemy async only"""
 
-    def __init__(  # pylint: disable=too-many-positional-arguments
+    def __init__(  # pylint: disable=too-many-positional-arguments,super-init-not-called
         self,
         schema: Type[PYDANTIC_SCHEMA],
         db_model: ModelType,
@@ -312,29 +145,64 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         update_validator: Optional[Callable] = None,
         **kwargs: Any,
     ) -> None:
+        # 1. Initialize base attributes
+        self._init_base_attributes(schema, db_model, db, raise_callback, paginate)
+
+        # 2. Initialize security hooks
+        self._init_security_hooks(
+            current_user_dependency,
+            contextual_filter,
+            access_checker,
+            permission_checker,
+            permissions,
+            create_validator,
+            update_validator,
+        )
+
+        # 3. Configure schemas
+        self._init_schemas(
+            schema, create_schema, update_schema, patch_schema, get_all_schema
+        )
+
+        # 4. Configure filtering system
+        self._init_filtering(filter_schema)
+
+        # 5. Configure pagination
+        self._init_pagination(paginate)
+
+        # 6. Determine which routes to enable
+        route_config = {
+            "get_all": get_all_route,
+            "get_all_options": get_all_options_route,
+            "get_one": get_one_route,
+            "create": create_route,
+            "update": update_route,
+            "delete_one": delete_one_route,
+            "delete_all": delete_all_route,
+        }
+        routes_enabled = self._check_routes_enabled(route_config)
+
+        # 7. Initialize FastAPI router
+        self._init_router(db_model, prefix, tags, routes_enabled, kwargs)
+
+        # 8. Register routes
+        if routes_enabled:
+            self._register_routes(route_config)
+
+    def _init_base_attributes(  # pylint: disable=too-many-positional-arguments
+        self,
+        schema: Type[PYDANTIC_SCHEMA],
+        db_model: ModelType,
+        db: SessionGenerator,
+        raise_callback: Optional[Callable],
+        paginate: Optional[int],
+    ) -> None:
+        """Initialize basic attributes"""
         self.schema = schema
         self.db_model = db_model
         self.db_func = db
         self.raise_callback = raise_callback
         self.paginate_limit = paginate
-
-        # Store security hooks
-        self.access_checker = access_checker
-        self.permission_checker = permission_checker
-        self.permissions = permissions or {}
-        self.create_validator = create_validator
-        self.update_validator = update_validator
-
-        # Wrap hooks in Depends() for FastAPI injection
-        if current_user_dependency:
-            self.current_user_depends = Depends(current_user_dependency)
-        else:
-            self.current_user_depends = None
-
-        if contextual_filter:
-            self.contextual_filter_depends = Depends(contextual_filter)
-        else:
-            self.contextual_filter_depends = Depends(lambda: {})
 
         # Set up primary key with validation
         pk_columns = db_model.__table__.primary_key.columns.keys()  # type: ignore[union-attr]
@@ -352,7 +220,43 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             col.key: getattr(db_model, col.key) for col in sa_inspect(db_model).columns
         }
 
-        # Set up schemas
+    def _init_security_hooks(  # pylint: disable=too-many-positional-arguments
+        self,
+        current_user_dependency: Optional[Callable],
+        contextual_filter: Optional[Callable],
+        access_checker: Optional[Callable],
+        permission_checker: Optional[Callable],
+        permissions: Optional[dict[str, Any]],
+        create_validator: Optional[Callable],
+        update_validator: Optional[Callable],
+    ) -> None:
+        """Initialize security hooks and validators"""
+        self.access_checker = access_checker
+        self.permission_checker = permission_checker
+        self.permissions = permissions or {}
+        self.create_validator = create_validator
+        self.update_validator = update_validator
+
+        # Wrap hooks in Depends() for FastAPI injection
+        if current_user_dependency:
+            self.current_user_depends = Depends(current_user_dependency)
+        else:
+            self.current_user_depends = None
+
+        if contextual_filter:
+            self.contextual_filter_depends = Depends(contextual_filter)
+        else:
+            self.contextual_filter_depends = Depends(lambda: {})
+
+    def _init_schemas(  # pylint: disable=too-many-positional-arguments
+        self,
+        schema: Type[PYDANTIC_SCHEMA],
+        create_schema: Optional[Type[PYDANTIC_SCHEMA]],
+        update_schema: Optional[Type[PYDANTIC_SCHEMA]],
+        patch_schema: Optional[Type[PYDANTIC_SCHEMA]],
+        get_all_schema: Optional[Type[PYDANTIC_SCHEMA]],
+    ) -> None:
+        """Initialize CRUD schemas"""
         self.create_schema = (
             create_schema
             if create_schema
@@ -372,25 +276,10 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         )
         self.get_all_schema = get_all_schema if get_all_schema else schema
 
-        # Set up filtering with auto-generated fields from schema
-        auto_filter_fields = {}
-
+    def _init_filtering(self, filter_schema: Optional[Type[PYDANTIC_SCHEMA]]) -> None:
+        """Initialize filtering system"""
         # Generate automatic filter fields from schema
-        # (all fields become optional filters)
-        for field_name, field_info in self.schema.model_fields.items():
-            # Only include simple fields (exclude joins, custom functions)
-            if not field_info.metadata:
-                # Make field optional for filtering
-                origin = get_origin(field_info.annotation)
-                if origin is UnionType and type(None) in get_args(
-                    field_info.annotation
-                ):
-                    # Already optional
-                    auto_filter_fields[field_name] = (field_info.annotation, None)
-                else:
-                    # Make it optional
-                    optional_type: Any = Optional[field_info.annotation]
-                    auto_filter_fields[field_name] = (optional_type, None)
+        auto_filter_fields = self._generate_auto_filter_fields()
 
         # Merge with custom filter_schema if provided
         if filter_schema:
@@ -422,26 +311,48 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             Depends(self.filter_schema) if self.filter_schema else Depends(lambda: None)
         )
 
-        # Set up pagination
+    def _generate_auto_filter_fields(self) -> dict[str, tuple]:
+        """Generate automatic filter fields from schema"""
+        auto_filter_fields = {}
+
+        for field_name, field_info in self.schema.model_fields.items():
+            # Only include simple fields (exclude joins, custom functions)
+            if not field_info.metadata:
+                # Make field optional for filtering
+                origin = get_origin(field_info.annotation)
+                if origin is UnionType and type(None) in get_args(
+                    field_info.annotation
+                ):
+                    # Already optional
+                    auto_filter_fields[field_name] = (field_info.annotation, None)
+                else:
+                    # Make it optional
+                    optional_type: Any = Optional[field_info.annotation]
+                    auto_filter_fields[field_name] = (optional_type, None)
+
+        return auto_filter_fields
+
+    def _init_pagination(self, paginate: Optional[int]) -> None:
+        """Initialize pagination"""
         self.pagination = pagination_factory(max_limit=paginate)
 
-        # Check if any routes are enabled (routes can be False or dependencies list)
+    def _check_routes_enabled(self, route_config: dict[str, Any]) -> bool:
+        """Check if any routes are enabled"""
+
         def is_route_enabled(route):
             return route is not False and route is not None
 
-        routes_enabled = any(
-            [
-                is_route_enabled(get_all_route),
-                is_route_enabled(get_all_options_route),
-                is_route_enabled(get_one_route),
-                is_route_enabled(create_route),
-                is_route_enabled(update_route),
-                is_route_enabled(delete_one_route),
-                is_route_enabled(delete_all_route),
-            ]
-        )
+        return any(is_route_enabled(route) for route in route_config.values())
 
-        # Set up router only if routes are enabled
+    def _init_router(  # pylint: disable=too-many-positional-arguments
+        self,
+        db_model: ModelType,
+        prefix: Optional[str],
+        tags: Optional[List[str]],
+        routes_enabled: bool,
+        kwargs: Any,
+    ) -> None:
+        """Initialize FastAPI router"""
         if routes_enabled:
             table_name = db_model.__tablename__  # type: ignore[union-attr]
             prefix = str(prefix if prefix else table_name).lower()
@@ -452,107 +363,106 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             # Initialize router with empty prefix if no routes are enabled
             super().__init__(prefix="", **kwargs)
 
-        # Only set up response models and routes if any routes are enabled
-        if routes_enabled:
-            # Set up response models
-            class PaginationResultModel(BaseModel):
-                total_records: int
-                total_pages: int
-                current_page: int
+    def _register_routes(self, route_config: dict[str, Any]) -> None:
+        """Register all enabled routes"""
 
-            class GetAllResponseModel(BaseModel):
-                pagination: PaginationResultModel
-                data: list[self.get_all_schema]  # type: ignore
+        # Create response models
+        class PaginationResultModel(BaseModel):
+            total_records: int
+            total_pages: int
+            current_page: int
 
-            # Add routes
-            if get_all_route:
-                # Always use pagination response model
-                self._add_api_route(
-                    "",
-                    self._get_all(),
-                    methods=["GET"],
-                    response_model=GetAllResponseModel,
-                    summary="Get All",
-                    dependencies=get_all_route,
-                )
+        class GetAllResponseModel(BaseModel):
+            pagination: PaginationResultModel
+            data: list[self.get_all_schema]  # type: ignore
 
-            if get_all_options_route:
-                self._add_api_route(
-                    "",
-                    self._get_all_options,
-                    methods=["OPTIONS"],
-                    response_model=dict[str, Any],
-                    summary="Get All Schema",
-                    dependencies=get_all_options_route,
-                )
+        # Register each route
+        if route_config["get_all"]:
+            self._add_api_route(
+                "",
+                self._get_all(),
+                methods=["GET"],
+                response_model=GetAllResponseModel,
+                summary="Get All",
+                dependencies=route_config["get_all"],
+            )
 
-            if create_route:
-                self._add_api_route(
-                    "",
-                    self._create(),
-                    methods=["POST"],
-                    response_model=schema,
-                    summary="Create One",
-                    status_code=201,
-                    dependencies=create_route,
-                )
+        if route_config.get("get_all_options"):
+            self._add_api_route(
+                "",
+                self._get_all_options,
+                methods=["OPTIONS"],
+                response_model=dict[str, Any],
+                summary="Get All Schema",
+                dependencies=route_config["get_all_options"],
+            )
 
-            if delete_all_route:
-                # Always use pagination response model
-                self._add_api_route(
-                    "",
-                    self._delete_all(),
-                    methods=["DELETE"],
-                    response_model=GetAllResponseModel,
-                    summary="Delete All",
-                    dependencies=delete_all_route,
-                )
+        if route_config["create"]:
+            self._add_api_route(
+                "",
+                self._create(),
+                methods=["POST"],
+                response_model=self.schema,
+                summary="Create One",
+                status_code=201,
+                dependencies=route_config["create"],
+            )
 
-            if get_one_route:
-                self._add_api_route(
-                    "/{item_id}",
-                    self._get_one(),
-                    methods=["GET"],
-                    response_model=schema,
-                    summary="Get One",
-                    dependencies=get_one_route,
-                    error_responses=[NOT_FOUND],
-                )
+        if route_config.get("delete_all"):
+            self._add_api_route(
+                "",
+                self._delete_all(),
+                methods=["DELETE"],
+                response_model=GetAllResponseModel,
+                summary="Delete All",
+                dependencies=route_config["delete_all"],
+            )
 
-            if update_route:
-                # PUT route - full replacement
-                self._add_api_route(
-                    "/{item_id}",
-                    self._update(),
-                    methods=["PUT"],
-                    response_model=schema,
-                    summary="Update One",
-                    dependencies=update_route,
-                    error_responses=[NOT_FOUND],
-                )
+        if route_config["get_one"]:
+            self._add_api_route(
+                "/{item_id}",
+                self._get_one(),
+                methods=["GET"],
+                response_model=self.schema,
+                summary="Get One",
+                dependencies=route_config["get_one"],
+                error_responses=[NOT_FOUND],
+            )
 
-                # PATCH route - partial update
-                self._add_api_route(
-                    "/{item_id}",
-                    self._patch(),
-                    methods=["PATCH"],
-                    response_model=schema,
-                    summary="Partially Update One",
-                    dependencies=update_route,
-                    error_responses=[NOT_FOUND],
-                )
+        if route_config["update"]:
+            # PUT route - full replacement
+            self._add_api_route(
+                "/{item_id}",
+                self._update(),
+                methods=["PUT"],
+                response_model=self.schema,
+                summary="Update One",
+                dependencies=route_config["update"],
+                error_responses=[NOT_FOUND],
+            )
 
-            if delete_one_route:
-                self._add_api_route(
-                    "/{item_id}",
-                    self._delete_one(),
-                    methods=["DELETE"],
-                    response_model=None,
-                    summary="Delete One",
-                    status_code=204,
-                    dependencies=delete_one_route,
-                    error_responses=[NOT_FOUND],
-                )
+            # PATCH route - partial update
+            self._add_api_route(
+                "/{item_id}",
+                self._patch(),
+                methods=["PATCH"],
+                response_model=self.schema,
+                summary="Partially Update One",
+                dependencies=route_config["update"],
+                error_responses=[NOT_FOUND],
+            )
+
+        if route_config["delete_one"]:
+            self._add_api_route(
+                "/{item_id}",
+                self._delete_one(),
+                methods=["DELETE"],
+                response_model=None,
+                summary="Delete One",
+                status_code=204,
+                dependencies=route_config["delete_one"],
+                error_responses=[NOT_FOUND],
+            )
 
     def _add_api_route(
         self,
@@ -576,7 +486,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     def api_route(
         self, path: str, *args: Any, **kwargs: Any
     ) -> Callable[[DecoratedCallable], DecoratedCallable]:
-        """Overrides and exiting route if it exists"""
+        """Overrides an existing route if it exists"""
         methods = kwargs.get("methods", ["GET"])
         self.remove_api_route(path, methods)
         return super().api_route(path, *args, **kwargs)
@@ -801,181 +711,244 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             contextual_filters: dict = self.contextual_filter_depends,
             user: Any = self.current_user_depends,
         ) -> GetAllResult:
-            page, limit = pagination.get("page", 1), pagination.get("limit")
-            # Use skip directly if provided, otherwise calculate from page
-            skip = pagination.get("skip", 0)
-            if skip == 0:
-                skip = (page - 1) * limit if limit else 0
+            # 1. Check permissions
+            self._check_permission(user, "get_all")
 
-            # Permission check
-            if (
-                self.permission_checker
-                and "get_all" in self.permissions
-                and user
-                and not self.permission_checker(user, self.permissions["get_all"])
-            ):
-                raise HTTPException(403, "No permission to view resources")
+            # 2. Parse pagination
+            page, limit, skip = self._parse_pagination(pagination)
 
-            base_class_fields, join_fields, join_list_fields, custom_func_fields = (
-                self.get_fields(self.get_all_schema)
+            # 3. Build base query with joins and custom functions
+            query, join_list_fields = self._build_base_query(self.get_all_schema)
+
+            # 4. Apply filters
+            query = self._apply_filters(query, filters, contextual_filters)
+
+            # 5. Count total records (before ordering - ORDER BY breaks COUNT on PostgreSQL)
+            count = await self._count_total(db, query)
+
+            # 6. Apply ordering
+            query = query.order_by(self._get_order_by(pagination))
+
+            # 7. Execute query with pagination
+            rows = await self._execute_paginated_query(db, query, limit, skip)
+
+            # 8. Process results into models
+            db_models = await self._process_results(
+                db, rows, self.get_all_schema, join_list_fields
             )
 
-            query = select(*base_class_fields)
-            query = self.compute_query_join(query, join_fields)
-            query = self.compute_custom_func(query, custom_func_fields)
-
-            def special_filter(query_src: Any, k: str, v: Any):
-                filter_key, filter_op = k.split("__")
-                # Use cached column access for performance
-                col = self._get_model_column(filter_key)
-                if filter_op == "gte":
-                    query_src = query_src.where(col >= v)
-                elif filter_op == "lte":
-                    query_src = query_src.where(col <= v)
-                elif filter_op == "like":
-                    query_src = query_src.where(col.ilike(f"%{v}%"))
-                elif filter_op == "in":
-                    query_src = query_src.where(col.in_(v))
-                return query_src
-
-            def query_where(query_src: Any) -> Any:
-                # Apply contextual filters first
-                if contextual_filters and isinstance(contextual_filters, dict):
-                    for k, v in contextual_filters.items():
-                        if v is None:
-                            continue
-                        if "__" in k:
-                            query_src = special_filter(query_src, k, v)
-                        else:
-                            # Use cached column access for performance
-                            col = self._get_model_column(k)
-                            query_src = query_src.where(col == v)
-
-                # Apply user filters
-                if filters and filters is not None:
-                    # Handle case where filters is a Pydantic model
-                    if hasattr(filters, "model_dump"):
-                        filter_dict = filters.model_dump()
-                    elif isinstance(filters, dict):
-                        filter_dict = filters
-                    else:
-                        # Skip filtering if filters is not a proper object
-                        return query_src
-
-                    for k, v in filter_dict.items():
-                        if v is None:
-                            continue
-
-                        metadata = self._get_filter_metadata(k)
-
-                        if callable(metadata):
-                            query_src = metadata(query_src, v)
-                        elif metadata:
-                            query_src = query_src.join(metadata.class_).where(
-                                metadata == v
-                            )
-                        elif "__" in k:
-                            query_src = special_filter(query_src, k, v)
-                        else:
-                            # Use cached column access for performance
-                            col = self._get_model_column(k)
-                            query_src = query_src.where(col == v)
-                return query_src
-
-            query = query_where(query).select_from(self.db_model)
-            # pylint: disable=not-callable
-            query_count = query.with_only_columns(func.count()).select_from(
-                self.db_model
-            )
-
-            def get_order_by() -> Any:
-                order_by = pagination.get("order_by")
-                if not order_by:
-                    # Use cached column access for performance
-                    return desc(self._get_model_column(self._pk))
-
-                order_by = order_by.split("__")
-                if len(order_by) == 2:
-                    order_by_field, order_by_direction = order_by
-                else:
-                    order_by_field = order_by[0]
-                    order_by_direction = "ASC"
-
-                # Validation: Reject private/dunder attributes (security)
-                if order_by_field.startswith("_"):
-                    return desc(self._get_model_column(self._pk))
-
-                # Validation: Check that field exists
-                if not hasattr(self.db_model, order_by_field):
-                    return desc(self._get_model_column(self._pk))
-
-                # Use cached column access for performance
-                field_attr = self._get_model_column(order_by_field)
-
-                # Validation: Only allow valid directions
-                if order_by_direction not in ("ASC", "DESC"):
-                    order_by_direction = "ASC"
-
-                if order_by_direction == "DESC":
-                    return desc(field_attr)
-
-                return field_attr
-
-            # Execute queries sequentially (AsyncSession is not safe for concurrent use)
-            result = await db.execute(
-                query.order_by(get_order_by()).limit(limit).offset(skip)
-            )
-            rows = result.all()
-
-            count_result = (await db.execute(query_count)).first()
-            count = count_result[0] if count_result else 0
-
-            # Performance optimization: Use batch loading to avoid N+1 queries
-            db_models: List[Model] = []
-            if join_list_fields:
-                # Extract all primary keys first
-                model_ids = []
-                rows_data = []
-                for row in rows:
-                    # pylint: disable=protected-access
-                    row_dict = (
-                        row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
-                    )
-                    pk_value = row_dict.get(self._pk, getattr(row, self._pk, None))
-                    model_ids.append(pk_value)
-                    rows_data.append(row_dict)
-
-                # Batch load all subdata in one call (solves N+1 problem)
-                batch_subdata = await self.compute_subdata_batch(
-                    db, model_ids, join_list_fields
-                )
-
-                # Build models with pre-loaded subdata
-                for row_dict, pk_value in zip(rows_data, model_ids):
-                    subdata = batch_subdata.get(pk_value, {})
-                    model = self.get_all_schema(**row_dict, **subdata)
-                    db_models.append(model)
-            else:
-                # No joins, simpler path
-                for row in rows:
-                    # pylint: disable=protected-access
-                    row_dict = (
-                        row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
-                    )
-                    model = self.get_all_schema(**row_dict)
-                    db_models.append(model)
-
-            # Always return pagination format
-            return {
-                "pagination": {
-                    "total_records": count,
-                    "total_pages": math.ceil(count / limit) if limit else 1,
-                    "current_page": page,
-                },
-                "data": db_models,
-            }
+            # 9. Build paginated response
+            return self._build_paginated_response(db_models, count, page, limit)
 
         return route
+
+    def _check_permission(self, user: Any, action: str) -> None:
+        """Check if user has permission for action"""
+        if (
+            self.permission_checker
+            and action in self.permissions
+            and user
+            and not self.permission_checker(user, self.permissions[action])
+        ):
+            raise HTTPException(
+                403, f"No permission to {action.replace('_', ' ')} resources"
+            )
+
+    def _parse_pagination(
+        self, pagination: PAGINATION
+    ) -> tuple[int, Optional[int], int]:
+        """Parse pagination parameters"""
+        page = pagination.get("page", 1)
+        limit = pagination.get("limit")
+        skip = pagination.get("skip", 0)
+
+        if skip == 0 and limit:
+            skip = (page - 1) * limit
+
+        return page, limit, skip
+
+    def _build_base_query(self, schema: Type[PYDANTIC_SCHEMA]) -> tuple[Any, Any]:
+        """Build base query with joins and custom functions"""
+        (
+            base_class_fields,
+            join_fields,
+            join_list_fields,
+            custom_func_fields,
+        ) = self.get_fields(schema)
+
+        query = select(*base_class_fields)
+        query = self.compute_query_join(query, join_fields)
+        query = self.compute_custom_func(query, custom_func_fields)
+
+        return query, join_list_fields
+
+    def _apply_filters(
+        self,
+        query: Any,
+        filters: Optional[PYDANTIC_SCHEMA],
+        contextual_filters: dict,
+    ) -> Any:
+        """Apply filters to query"""
+
+        def apply_special_filter(query_src: Any, key: str, value: Any):
+            """Apply special filter operators (__gte, __lte, __like, __in)"""
+            filter_key, filter_op = key.split("__")
+            col = self._get_model_column(filter_key)
+
+            if filter_op == "gte":
+                return query_src.where(col >= value)
+            if filter_op == "lte":
+                return query_src.where(col <= value)
+            if filter_op == "like":
+                return query_src.where(col.ilike(f"%{value}%"))
+            if filter_op == "in":
+                return query_src.where(col.in_(value))
+            return query_src
+
+        # Apply contextual filters first
+        if contextual_filters and isinstance(contextual_filters, dict):
+            for k, v in contextual_filters.items():
+                if v is None:
+                    continue
+                if "__" in k:
+                    query = apply_special_filter(query, k, v)
+                else:
+                    col = self._get_model_column(k)
+                    query = query.where(col == v)
+
+        # Apply user filters
+        if filters:
+            filter_dict = (
+                filters.model_dump()
+                if hasattr(filters, "model_dump")
+                else filters
+                if isinstance(filters, dict)
+                else None
+            )
+
+            if filter_dict:
+                for k, v in filter_dict.items():
+                    if v is None:
+                        continue
+
+                    metadata = self._get_filter_metadata(k)
+
+                    if callable(metadata):
+                        query = metadata(query, v)
+                    elif metadata:
+                        query = query.join(metadata.class_).where(metadata == v)
+                    elif "__" in k:
+                        query = apply_special_filter(query, k, v)
+                    else:
+                        col = self._get_model_column(k)
+                        query = query.where(col == v)
+
+        return query.select_from(self.db_model)
+
+    def _get_order_by(self, pagination: PAGINATION) -> Any:
+        """Get order by clause from pagination"""
+        order_by = pagination.get("order_by")
+        if not order_by:
+            return desc(self._get_model_column(self._pk))
+
+        order_by_parts = order_by.split("__")
+        if len(order_by_parts) == 2:
+            order_by_field, order_by_direction = order_by_parts
+        else:
+            order_by_field = order_by_parts[0]
+            order_by_direction = "ASC"
+
+        # Validation: Reject private/dunder attributes (security)
+        if order_by_field.startswith("_"):
+            return desc(self._get_model_column(self._pk))
+
+        # Validation: Check that field exists
+        if not hasattr(self.db_model, order_by_field):
+            return desc(self._get_model_column(self._pk))
+
+        field_attr = self._get_model_column(order_by_field)
+
+        # Validation: Only allow valid directions
+        if order_by_direction not in ("ASC", "DESC"):
+            order_by_direction = "ASC"
+
+        return desc(field_attr) if order_by_direction == "DESC" else field_attr
+
+    async def _execute_paginated_query(
+        self, db: AsyncSession, query: Any, limit: Optional[int], skip: int
+    ) -> list:
+        """Execute query with pagination"""
+        result = await db.execute(query.limit(limit).offset(skip))
+        return result.all()
+
+    async def _count_total(self, db: AsyncSession, query: Any) -> int:
+        """Count total records for query"""
+        # pylint: disable=not-callable
+        query_count = query.with_only_columns(func.count()).select_from(self.db_model)
+        count_result = (await db.execute(query_count)).first()
+        return count_result[0] if count_result else 0
+
+    async def _process_results(
+        self,
+        db: AsyncSession,
+        rows: list,
+        schema: Type[PYDANTIC_SCHEMA],
+        join_list_fields: Any,
+    ) -> List[Model]:
+        """Process query results into schema models"""
+        db_models: List[Model] = []
+
+        if join_list_fields:
+            # Extract all primary keys first for batch loading
+            model_ids = []
+            rows_data = []
+            for row in rows:
+                # pylint: disable=protected-access
+                row_dict = (
+                    row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
+                )
+                pk_value = row_dict.get(self._pk, getattr(row, self._pk, None))
+                model_ids.append(pk_value)
+                rows_data.append(row_dict)
+
+            # Batch load all subdata in one call (solves N+1 problem)
+            batch_subdata = await self.compute_subdata_batch(
+                db, model_ids, join_list_fields
+            )
+
+            # Build models with pre-loaded subdata
+            for row_dict, pk_value in zip(rows_data, model_ids):
+                subdata = batch_subdata.get(pk_value, {})
+                model = schema(**row_dict, **subdata)
+                db_models.append(model)
+        else:
+            # No joins, simpler path
+            for row in rows:
+                # pylint: disable=protected-access
+                row_dict = (
+                    row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
+                )
+                model = schema(**row_dict)
+                db_models.append(model)
+
+        return db_models
+
+    def _build_paginated_response(
+        self,
+        data: List[Model],
+        total_count: int,
+        page: int,
+        limit: Optional[int],
+    ) -> GetAllResult:
+        """Build paginated response"""
+        return {
+            "pagination": {
+                "total_records": total_count,
+                "total_pages": math.ceil(total_count / limit) if limit else 1,
+                "current_page": page,
+            },
+            "data": data,
+        }
 
     def _get_one(self) -> Callable[..., Coroutine[Any, Any, Model]]:
         """Get one item by ID"""
@@ -1041,7 +1014,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             ):
                 raise HTTPException(403, "No permission to create resources")
 
-            # Validation métier
+            # Business validation
             if self.create_validator and user:
                 model = await self.create_validator(model, user, db)
 
@@ -1085,7 +1058,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             if self.access_checker and user:
                 await self.access_checker(item_id, user, db)
 
-            # Validation métier (optionnel)
+            # Business validation (optional)
             if self.update_validator and user:
                 model = await self.update_validator(model, user, db)
 
@@ -1145,7 +1118,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             if self.access_checker and user:
                 await self.access_checker(item_id, user, db)
 
-            # Validation métier (optionnel)
+            # Business validation (optional)
             if self.update_validator and user:
                 model = await self.update_validator(model, user, db)
 

@@ -1,0 +1,180 @@
+"""Schema factory functions for CRUD operations"""
+
+from copy import copy
+from datetime import date, datetime
+from types import UnionType
+from typing import Annotated, Any, Optional, Type, Union, get_args, get_origin
+
+from pydantic import BaseModel, create_model
+
+# Import Pydantic string-like types for filter generation
+try:
+    from pydantic import AnyUrl, EmailStr, HttpUrl
+
+    PYDANTIC_STRING_TYPES: tuple = (EmailStr, AnyUrl, HttpUrl)
+except ImportError:
+    # If specific types aren't available, use empty tuple
+    PYDANTIC_STRING_TYPES = ()
+
+
+def get_pk_type(schema: Type[BaseModel], pk_field: str) -> Any:
+    """Extract primary key type from schema"""
+    try:
+        field_annotation = schema.model_fields[pk_field].annotation
+        return field_annotation if field_annotation is not None else int
+    except (KeyError, AttributeError):
+        return int
+
+
+def schema_factory(
+    schema_cls: Type[BaseModel], pk_field_name: str = "id", name: str = "Create"
+) -> Type[BaseModel]:
+    """Create schema without primary key for create/update operations"""
+    fields: dict[str, Any] = {}
+    for field_name, field_info in schema_cls.model_fields.items():
+        if field_name != pk_field_name:
+            if field_info.default is not None:
+                fields[field_name] = (field_info.annotation, field_info.default)
+            else:
+                fields[field_name] = (field_info.annotation, ...)
+
+    return create_model(f"{schema_cls.__name__}{name}", **fields)
+
+
+def optional_schema_factory(
+    schema_cls: Type[BaseModel], pk_field_name: str = "id", name: str = "Patch"
+) -> Type[BaseModel]:
+    """Create schema with all fields optional for partial updates (PATCH)
+
+    Preserves all validators and FieldInfo metadata (aliases, constraints, etc.).
+    Uses shallow copy which is faster than deepcopy while preserving all attributes.
+    """
+    fields = {}
+    for field_name, field_info in schema_cls.model_fields.items():
+        if field_name != pk_field_name:
+            # Shallow copy the FieldInfo - faster than deepcopy and preserves
+            # all attributes including metadata (which contains constraints)
+            new_field_info = copy(field_info)
+
+            # Modify only what's needed for PATCH: make it optional with None default
+            new_field_info.default = None
+            new_field_info.default_factory = None
+
+            fields[field_name] = (Optional[field_info.annotation], new_field_info)
+
+    # Create new model with __base__ to inherit validators
+    new_model = create_model(  # type: ignore[call-overload]
+        f"{schema_cls.__name__}{name}",
+        __base__=schema_cls,
+        __module__=schema_cls.__module__,
+        **fields,
+    )
+
+    return new_model
+
+
+def is_optional_type(annotation: Any) -> bool:
+    """Check if a type annotation is Optional (Union with None)"""
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        args = get_args(annotation)
+        return type(None) in args
+    return False
+
+
+def extract_python_type(field_type: Any) -> Any:
+    """Extract base type from Optional types and Annotated types"""
+    origin = get_origin(field_type)
+    if origin is None:
+        return field_type
+
+    # Handle Annotated types: Annotated[T, metadata] -> T
+    if origin is Annotated:
+        args = get_args(field_type)
+        if args:
+            # Recursively extract in case we have Annotated[Optional[T], ...]
+            return extract_python_type(args[0])
+
+    args = get_args(field_type)
+    if (
+        (origin is UnionType or origin is Union)
+        and len(args) == 2
+        and type(None) in args
+    ):
+        # Get the non-None type and recursively extract
+        # (in case it's Annotated)
+        non_none_type = next(arg for arg in args if arg is not type(None))
+        return extract_python_type(non_none_type)
+
+    return origin
+
+
+def _is_string_like_type(field_type: Any) -> bool:
+    """Check if a type is string or string-like (EmailStr, HttpUrl, etc.)
+
+    Returns True for:
+    - str (base Python type)
+    - Pydantic string types (EmailStr, HttpUrl, AnyUrl, etc.)
+    """
+    # Check for base str type
+    if field_type is str:
+        return True
+
+    # Check for known Pydantic string types
+    if PYDANTIC_STRING_TYPES and isinstance(field_type, type):
+        try:
+            if issubclass(field_type, PYDANTIC_STRING_TYPES):
+                return True
+        except TypeError:
+            # Some types like Annotated[] can't be used with issubclass
+            pass
+
+    # Fallback: check if type name suggests it's a string type
+    # This catches custom string validators and other Pydantic string types
+    if hasattr(field_type, "__name__"):
+        name = field_type.__name__
+        if "Str" in name or "Email" in name or "Url" in name or "Uri" in name:
+            return True
+
+    return False
+
+
+def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
+    """Generate filter fields with special operators"""
+    new_fields = {}
+    for field_name, field_info in base_fields.items():
+        # Skip operator fields (ending with __like, __gte, __lte)
+        if field_name.endswith(("__like", "__gte", "__lte")):
+            continue
+
+        field_type = extract_python_type(field_info.annotation)
+        if field_type in (date, datetime):
+            lte = f"{field_name}__lte"
+            if lte not in base_fields:
+                new_fields[lte] = (Optional[field_type], None)
+
+            gte = f"{field_name}__gte"
+            if gte not in base_fields:
+                new_fields[gte] = (Optional[field_type], None)
+
+        elif _is_string_like_type(field_type):
+            like = f"{field_name}__like"
+            if like not in base_fields:
+                new_fields[like] = (Optional[str], None)
+
+    return new_fields
+
+
+def create_filter(base_model: type[BaseModel]) -> type[BaseModel]:
+    """Create filter schema with special operators"""
+    base_fields = base_model.model_fields
+    dynamic_fields = generate_fields_with_suffixes(base_fields)
+
+    return create_model(  # type: ignore[call-overload]
+        base_model.__name__,
+        __base__=base_model,
+        **{
+            name: (annotation, default)
+            for name, (annotation, default) in dynamic_fields.items()
+        },
+    )

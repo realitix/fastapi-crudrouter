@@ -535,7 +535,7 @@ def test_patch_null_check_uses_update_schema():
     # Verify that password in patch_schema is Optional (for partial updates)
     # but the null guard should still reject explicit null based on update_schema
     # pylint: disable=import-outside-toplevel
-    from fastapi_crudrouter.crud_router import is_optional_type  # noqa: PLC0415
+    from fastapi_crudrouter.schema_factory import is_optional_type  # noqa: PLC0415
 
     password_annotation = router.patch_schema.model_fields["password"].annotation
     assert is_optional_type(password_annotation)  # Should be Optional for PATCH
@@ -588,7 +588,7 @@ def test_patch_null_check_required_field_different_optionality():
 
     # Verify schemas have different optionality for email
     # pylint: disable=import-outside-toplevel,unsubscriptable-object
-    from fastapi_crudrouter.crud_router import is_optional_type  # noqa: PLC0415
+    from fastapi_crudrouter.schema_factory import is_optional_type  # noqa: PLC0415
 
     read_email_field = AccountRead.model_fields["email"]
     update_email_field = AccountUpdate.model_fields["email"]

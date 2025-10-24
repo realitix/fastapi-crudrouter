@@ -5,7 +5,7 @@ from typing import Annotated, Optional, Union
 
 from pydantic import BaseModel
 
-from fastapi_crudrouter.crud_router import (
+from fastapi_crudrouter.schema_factory import (
     _is_string_like_type,
     extract_python_type,
     generate_fields_with_suffixes,
