@@ -1,3 +1,61 @@
+"""FastAPI CRUD Router - Automatic CRUD route generation.
+
+This module provides the CRUDRouter class that automatically generates
+RESTful CRUD routes for SQLAlchemy async models with Pydantic schemas.
+
+Features:
+    - Automatic CRUD route generation (GET, POST, PUT, PATCH, DELETE)
+    - Advanced pagination with metadata
+    - Complex filtering with operators (__like, __gte, __lte, __in)
+    - Join support for relationships
+    - Custom query functions
+    - Permission and access control
+    - Dynamic schema generation
+    - Validation hooks
+
+Basic Usage:
+    >>> from fastapi import FastAPI
+    >>> from fastapi_crudrouter import CRUDRouter
+    >>> from sqlalchemy.ext.asyncio import AsyncSession
+    >>>
+    >>> app = FastAPI()
+    >>>
+    >>> router = CRUDRouter(
+    ...     schema=UserSchema,
+    ...     db_model=UserModel,
+    ...     db=get_session,
+    ...     prefix="/users"
+    ... )
+    >>> app.include_router(router)
+
+Advanced Usage:
+    >>> router = CRUDRouter(
+    ...     schema=UserSchema,
+    ...     db_model=UserModel,
+    ...     db=get_session,
+    ...     create_schema=UserCreateSchema,
+    ...     update_schema=UserUpdateSchema,
+    ...     filter_schema=UserFilterSchema,
+    ...     paginate=100,
+    ...     permission_checker=check_permission,
+    ...     access_checker=check_access,
+    ... )
+
+Generated Routes:
+    - GET    /resource           -> Get all (with pagination)
+    - GET    /resource/{id}      -> Get one by ID
+    - POST   /resource           -> Create one
+    - PUT    /resource/{id}      -> Full update
+    - PATCH  /resource/{id}      -> Partial update
+    - DELETE /resource/{id}      -> Delete one
+    - DELETE /resource           -> Delete all
+
+See Also:
+    - CRUDRouter: Main router class
+    - schema_factory: Create/update schema generation
+    - optional_schema_factory: PATCH schema generation
+"""
+
 import math
 from types import UnionType
 from typing import (
@@ -53,7 +111,24 @@ NOT_FOUND = HTTPException(404, "Item not found")
 
 
 def pagination_factory(max_limit: Optional[int] = None):
-    """Create pagination dependency"""
+    """Create a FastAPI pagination dependency.
+
+    Creates a dependency function that validates and processes pagination
+    parameters (page, skip, limit, order_by) from query strings.
+
+    Args:
+        max_limit: Maximum allowed limit value. If None, no maximum is enforced.
+
+    Returns:
+        A FastAPI Depends() function that returns a PAGINATION dict
+
+    Raises:
+        HTTPException: 422 if pagination parameters are invalid
+
+    Examples:
+        >>> paginate = pagination_factory(max_limit=100)
+        >>> # In route: pagination: dict = paginate
+    """
 
     def paginate(
         page: int = 1,
@@ -86,7 +161,28 @@ def pagination_factory(max_limit: Optional[int] = None):
 
 
 def find_join_condition(from_cls, target_attr):
-    """Find join condition between tables"""
+    """Find join condition between two SQLAlchemy tables.
+
+    Automatically discovers foreign key relationships between tables to
+    construct proper JOIN conditions.
+
+    Args:
+        from_cls: Source SQLAlchemy model class
+        target_attr: Target relationship attribute
+
+    Returns:
+        SQLAlchemy comparison expression for JOIN condition, or None if not found
+
+    Examples:
+        >>> # With models:
+        >>> # class User(Base):
+        >>> #     id = Column(Integer, primary_key=True)
+        >>> # class Post(Base):
+        >>> #     user_id = Column(Integer, ForeignKey('user.id'))
+        >>> #     user = relationship(User)
+        >>> find_join_condition(Post, Post.user)
+        Post.user_id == User.id
+    """
     target_cls = target_attr.class_
 
     from_mapper = sa_inspect(from_cls)
@@ -102,18 +198,132 @@ def find_join_condition(from_cls, target_attr):
 
 
 class PaginationResult(TypedDict):
+    """Pagination metadata for get_all responses.
+
+    Attributes:
+        total_records: Total number of records matching the query
+        total_pages: Total number of pages with current limit
+        current_page: Current page number (1-indexed)
+    """
+
     total_records: int
     total_pages: int
     current_page: int
 
 
 class GetAllResult(TypedDict):
+    """Response structure for get_all endpoint.
+
+    Attributes:
+        pagination: Pagination metadata
+        data: List of model instances matching the query
+    """
+
     pagination: PaginationResult
     data: list[Model]
 
 
 class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
-    """Simplified CRUD Router for SQLAlchemy async only"""
+    """FastAPI router that automatically generates CRUD routes for SQLAlchemy models.
+
+    This router creates RESTful endpoints for Create, Read, Update, and Delete
+    operations on SQLAlchemy async models with Pydantic validation.
+
+    Attributes:
+        schema: Pydantic schema for response serialization
+        db_model: SQLAlchemy model class
+        db_func: Async session generator function
+        create_schema: Schema for POST requests (auto-generated if not provided)
+        update_schema: Schema for PUT requests (auto-generated if not provided)
+        patch_schema: Schema for PATCH requests (auto-generated if not provided)
+        get_all_schema: Schema for GET all responses (defaults to schema)
+        filter_schema: Schema for filtering (auto-generated from schema fields)
+        paginate_limit: Maximum pagination limit
+        access_checker: Function to check resource access
+        permission_checker: Function to check permissions
+        permissions: Dict mapping route names to permission requirements
+        create_validator: Custom validator for create operations
+        update_validator: Custom validator for update operations
+
+    Args:
+        schema: Pydantic schema for the model
+        db_model: SQLAlchemy async model class
+        db: Async session generator (e.g., from async_sessionmaker)
+        create_schema: Optional custom schema for POST requests
+        update_schema: Optional custom schema for PUT requests
+        patch_schema: Optional custom schema for PATCH requests
+        get_all_schema: Optional custom schema for GET all responses
+        filter_schema: Optional custom schema for filtering
+        prefix: URL prefix for routes (defaults to table name)
+        tags: OpenAPI tags for documentation
+        paginate: Maximum number of results per page
+        get_all_route: Enable GET all route (True, False, or list of dependencies)
+        get_all_options_route: Enable OPTIONS route for schema
+        get_one_route: Enable GET one route
+        create_route: Enable POST route
+        update_route: Enable PUT/PATCH routes
+        delete_one_route: Enable DELETE one route
+        delete_all_route: Enable DELETE all route
+        raise_callback: Custom callback for exception handling
+        current_user_dependency: Dependency for getting current user
+        contextual_filter: Dependency for contextual filtering
+        access_checker: Function to check if user can access specific resource
+        permission_checker: Function to check if user has permission
+        permissions: Dict of permissions required per route
+        create_validator: Custom validator for create operations
+        update_validator: Custom validator for update operations
+        **kwargs: Additional arguments passed to APIRouter
+
+    Examples:
+        Basic usage:
+            >>> router = CRUDRouter(
+            ...     schema=UserSchema,
+            ...     db_model=User,
+            ...     db=get_session
+            ... )
+
+        With custom schemas:
+            >>> router = CRUDRouter(
+            ...     schema=UserSchema,
+            ...     db_model=User,
+            ...     db=get_session,
+            ...     create_schema=UserCreateSchema,
+            ...     update_schema=UserUpdateSchema,
+            ... )
+
+        With permissions:
+            >>> def check_permission(user, required_perm):
+            ...     return required_perm in user.permissions
+            >>>
+            >>> router = CRUDRouter(
+            ...     schema=UserSchema,
+            ...     db_model=User,
+            ...     db=get_session,
+            ...     permission_checker=check_permission,
+            ...     permissions={
+            ...         "get_all": "users:read",
+            ...         "create": "users:write",
+            ...     }
+            ... )
+
+        Disable certain routes:
+            >>> router = CRUDRouter(
+            ...     schema=UserSchema,
+            ...     db_model=User,
+            ...     db=get_session,
+            ...     delete_all_route=False,  # Disable delete all
+            ... )
+
+    Raises:
+        ValueError: If db_model doesn't have a primary key
+
+    Notes:
+        - All routes are async by default
+        - Filtering supports special operators: __like, __gte, __lte, __in
+        - Pagination includes metadata: total_records, total_pages, current_page
+        - PUT requires all fields, PATCH allows partial updates
+        - Both PUT and PATCH respect Pydantic validators
+    """
 
     def __init__(  # pylint: disable=too-many-positional-arguments,super-init-not-called
         self,
@@ -526,7 +736,24 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 self.routes.remove(route)
 
     def _get_filter_metadata(self, filter_key: str) -> Any:
-        """Get metadata for filter field"""
+        """Get metadata for filter field.
+
+        Extracts custom metadata from filter schema fields, typically
+        used for custom filter functions or join-based filtering.
+
+        Args:
+            filter_key: Name of the filter field
+
+        Returns:
+            Metadata object (usually a relationship or callable), or None
+
+        Examples:
+            >>> # In filter schema:
+            >>> class UserFilter(BaseModel):
+            ...     department: Optional[str] = Field(None, metadata=[Department.name])
+            >>> metadata = router._get_filter_metadata("department")
+            >>> # metadata = Department.name (relationship attribute)
+        """
         if not self.filter_schema:
             return None
         model_fields = self.filter_schema.model_fields
@@ -545,7 +772,33 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         return getattr(self.db_model, field_name)
 
     def get_fields(self, schema) -> Any:
-        """Parse schema fields for joins and custom functions"""
+        """Parse schema fields to identify joins, list joins, and custom functions.
+
+        Analyzes a Pydantic schema's fields to separate:
+        - Base model fields (direct columns)
+        - Join fields (single relationships)
+        - Join list fields (one-to-many relationships)
+        - Custom function fields (computed fields)
+
+        Args:
+            schema: Pydantic schema to parse
+
+        Returns:
+            Tuple of (base_class_fields, join_fields, join_list_fields, custom_func_fields)
+            - base_class_fields: List of SQLAlchemy column attributes
+            - join_fields: Dict of field_name -> (relationship, is_outer_join)
+            - join_list_fields: Dict of field_name -> (table, foreign_key, schema)
+            - custom_func_fields: Dict of field_name -> custom_function
+
+        Examples:
+            >>> class UserSchema(BaseModel):
+            ...     id: int
+            ...     name: str
+            ...     posts: List[PostSchema] = Field(metadata=[...])
+            >>> base, joins, list_joins, funcs = router.get_fields(UserSchema)
+            >>> # base = [User.id, User.name]
+            >>> # list_joins = {'posts': (Post, Post.user_id, PostSchema)}
+        """
 
         def type_can_be_none(type_hint):
             if get_origin(type_hint) is UnionType:
@@ -584,7 +837,24 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         return base_class_fields, join_fields, join_list_fields, custom_func_fields
 
     def compute_query_join(self, query, join_fields) -> Any:
-        """Add joins to query"""
+        """Add JOIN clauses to query for relationship fields.
+
+        Automatically determines join conditions using foreign keys and adds
+        the necessary JOIN clauses. Prevents duplicate joins.
+
+        Args:
+            query: SQLAlchemy select query
+            join_fields: Dict of label -> (attribute, is_outer) from get_fields()
+
+        Returns:
+            Modified query with JOIN clauses added
+
+        Notes:
+            - Automatically finds join conditions via foreign keys
+            - Uses LEFT OUTER JOIN if is_outer is True
+            - Tracks already joined tables to prevent duplicates
+            - Adds relationship columns with labels to select
+        """
         already_joined = set()
         for label, (attribute, isouter) in join_fields.items():
             if attribute.class_ not in already_joined:
@@ -600,7 +870,28 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     async def compute_subdata(
         self, db: AsyncSession, model_id: Any, join_list_fields: dict
     ) -> Any:
-        """Compute subdata for list joins (single model)"""
+        """Compute subdata for one-to-many relationships.
+
+        Fetches related records for list-type joins (one-to-many relationships)
+        for a single parent record.
+
+        Args:
+            db: Active async database session
+            model_id: Primary key value of the parent record
+            join_list_fields: Dict from get_fields() with list join definitions
+
+        Returns:
+            Dict mapping field names to lists of related Pydantic models
+
+        Examples:
+            >>> # For a User with multiple Posts:
+            >>> subdata = await router.compute_subdata(db, user_id=1, join_list_fields)
+            >>> # subdata = {'posts': [PostSchema(...), PostSchema(...)]}
+
+        Notes:
+            - Executes one query per relationship field
+            - Can cause N+1 query problem (see Week 2 for optimization)
+        """
         subdata: dict[str, Any] = {}
         for field, (attribute, foreign_key, read_cls) in join_list_fields.items():
             subdata[field] = []

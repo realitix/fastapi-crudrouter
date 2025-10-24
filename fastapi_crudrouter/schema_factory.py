@@ -18,7 +18,22 @@ except ImportError:
 
 
 def get_pk_type(schema: Type[BaseModel], pk_field: str) -> Any:
-    """Extract primary key type from schema"""
+    """Extract primary key type from Pydantic schema.
+
+    Args:
+        schema: The Pydantic schema to extract from
+        pk_field: Name of the primary key field
+
+    Returns:
+        The type annotation of the primary key field, or int if not found
+
+    Examples:
+        >>> class User(BaseModel):
+        ...     id: int
+        ...     name: str
+        >>> get_pk_type(User, "id")
+        <class 'int'>
+    """
     try:
         field_annotation = schema.model_fields[pk_field].annotation
         return field_annotation if field_annotation is not None else int
@@ -74,7 +89,22 @@ def optional_schema_factory(
 
 
 def is_optional_type(annotation: Any) -> bool:
-    """Check if a type annotation is Optional (Union with None)"""
+    """Check if a type annotation is Optional (Union with None).
+
+    Args:
+        annotation: Type annotation to check
+
+    Returns:
+        True if annotation is Optional[T] or T | None, False otherwise
+
+    Examples:
+        >>> is_optional_type(Optional[str])
+        True
+        >>> is_optional_type(str | None)
+        True
+        >>> is_optional_type(str)
+        False
+    """
     origin = get_origin(annotation)
     if origin is Union or origin is UnionType:
         args = get_args(annotation)
@@ -83,7 +113,24 @@ def is_optional_type(annotation: Any) -> bool:
 
 
 def extract_python_type(field_type: Any) -> Any:
-    """Extract base type from Optional types and Annotated types"""
+    """Extract base type from Optional and Annotated type annotations.
+
+    Recursively unwraps Optional[T] to T and Annotated[T, ...] to T.
+
+    Args:
+        field_type: Type annotation to extract from
+
+    Returns:
+        The base Python type without Optional or Annotated wrappers
+
+    Examples:
+        >>> extract_python_type(Optional[str])
+        <class 'str'>
+        >>> extract_python_type(Annotated[int, "metadata"])
+        <class 'int'>
+        >>> extract_python_type(Optional[Annotated[str, "meta"]])
+        <class 'str'>
+    """
     origin = get_origin(field_type)
     if origin is None:
         return field_type
@@ -110,11 +157,25 @@ def extract_python_type(field_type: Any) -> Any:
 
 
 def _is_string_like_type(field_type: Any) -> bool:
-    """Check if a type is string or string-like (EmailStr, HttpUrl, etc.)
+    """Check if a type is string or string-like (EmailStr, HttpUrl, etc.).
 
-    Returns True for:
-    - str (base Python type)
-    - Pydantic string types (EmailStr, HttpUrl, AnyUrl, etc.)
+    Identifies types that should be treated as strings for filtering purposes,
+    including Pydantic special string types.
+
+    Args:
+        field_type: Type to check
+
+    Returns:
+        True for str and Pydantic string types (EmailStr, HttpUrl, AnyUrl),
+        False otherwise
+
+    Examples:
+        >>> _is_string_like_type(str)
+        True
+        >>> _is_string_like_type(int)
+        False
+        >>> _is_string_like_type(EmailStr)  # If available
+        True
     """
     # Check for base str type
     if field_type is str:
@@ -140,7 +201,35 @@ def _is_string_like_type(field_type: Any) -> bool:
 
 
 def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
-    """Generate filter fields with special operators"""
+    """Generate filter fields with special operators for date and string types.
+
+    Creates additional filter fields with __gte, __lte operators for date/datetime
+    fields and __like operator for string fields.
+
+    Args:
+        base_fields: Dictionary of field names to FieldInfo from a Pydantic model
+
+    Returns:
+        Dictionary of new field names with operators to (type, default) tuples
+
+    Examples:
+        >>> class User(BaseModel):
+        ...     name: str
+        ...     created_at: date
+        >>> fields = User.model_fields
+        >>> generate_fields_with_suffixes(fields)
+        {
+            'name__like': (Optional[str], None),
+            'created_at__gte': (Optional[date], None),
+            'created_at__lte': (Optional[date], None)
+        }
+
+    Notes:
+        - String fields get __like operator for case-insensitive pattern matching
+        - Date/datetime fields get __gte and __lte for range filtering
+        - Existing operator fields (already ending in __like, __gte, __lte) are skipped
+        - Int/float fields do not get automatic operators
+    """
     new_fields = {}
     for field_name, field_info in base_fields.items():
         # Skip operator fields (ending with __like, __gte, __lte)
@@ -166,7 +255,24 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
 
 
 def create_filter(base_model: type[BaseModel]) -> type[BaseModel]:
-    """Create filter schema with special operators"""
+    """Create filter schema with special operators from a base schema.
+
+    Extends a Pydantic model with additional fields for filtering operations.
+    Inherits from base_model to preserve validators and metadata.
+
+    Args:
+        base_model: Base Pydantic model to extend
+
+    Returns:
+        New Pydantic model class with added filter operator fields
+
+    Examples:
+        >>> class UserFilter(BaseModel):
+        ...     name: Optional[str] = None
+        ...     age: Optional[int] = None
+        >>> FilterSchema = create_filter(UserFilter)
+        >>> # FilterSchema now has: name, age, name__like, age__gte, age__lte
+    """
     base_fields = base_model.model_fields
     dynamic_fields = generate_fields_with_suffixes(base_fields)
 

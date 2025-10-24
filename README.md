@@ -81,11 +81,17 @@ app.include_router(CRUDRouter(schema=Potato, db_model=PotatoModel, db=get_sessio
 fastapi-crudrouter provides a number of features that allow you to get the most out of your automatically generated CRUD
 routes. Listed below are some highlights.
 
-- Automatic Pagination ([docs](https://fastapi-crudrouter.awtkns.com/pagination/))
+- Automatic Pagination with metadata ([docs](https://fastapi-crudrouter.awtkns.com/pagination/))
+- Complex Filtering with operators (__like, __gte, __lte, __in)
+- Join Support for relationships (one-to-one, one-to-many)
+- Custom Query Functions for computed fields
+- Permission and Access Control
 - Ability to Provide Custom Create and Update Schemas ([docs](https://fastapi-crudrouter.awtkns.com/schemas/))
 - Dynamic Generation of Create and Update Schemas ([docs](https://fastapi-crudrouter.awtkns.com/schemas/))
 - Ability to Add, Customize, or Disable Specific Routes ([docs](https://fastapi-crudrouter.awtkns.com/routing/))
 - Native Support for FastAPI Dependency Injection ([docs](https://fastapi-crudrouter.awtkns.com/dependencies/))
+
+**For detailed examples and usage patterns, see [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)**
 
 ## Supported Backend
 fastapi-crudrouter now focuses on providing the best SQLAlchemy async experience:
@@ -104,3 +110,152 @@ Below are the default routes created by the CRUDRouter shown in the generated Op
 The CRUDRouter is able to dynamically generate detailed documentation based on the models given to it.
 
 ![OpenAPI Route Detail](https://raw.githubusercontent.com/awtkns/fastapi-crudrouter/master/docs/en/docs/assets/RouteDetail.png)
+
+## Testing
+
+FastAPI-CRUDRouter includes a comprehensive test suite to ensure reliability and correctness.
+
+### Running Tests
+
+```bash
+# Install development dependencies
+pip install -r tests/dev.requirements.txt
+
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest --verbose
+
+# Run specific test file
+pytest tests/test_specific.py
+
+# Run tests matching a pattern
+pytest -k "test_name"
+```
+
+### Running Code Quality Checks
+
+```bash
+# Run linting
+flake8
+
+# Run type checking
+mypy fastapi_crudrouter/
+
+# Run all quality checks
+make lint
+```
+
+## Troubleshooting
+
+### Common Issues
+
+#### "Item not found" error when accessing existing items
+- Verify that your primary key field name matches between your Pydantic schema and SQLAlchemy model
+- Check that the database session is properly configured and connected
+- Ensure your database tables have been created (use `Base.metadata.create_all()`)
+
+#### Routes not appearing in OpenAPI docs
+- Make sure you've included the router in your FastAPI app: `app.include_router(router)`
+- Check that routes are enabled (e.g., `create_route=True`, not `False`)
+- Verify the prefix is correctly set
+
+#### Filtering not working as expected
+- String filters use `__like` for partial matching (case-insensitive)
+- Date filters use `__gte` and `__lte` for range queries
+- Ensure filter field names match your schema field names exactly
+
+#### Permission denied errors
+- Verify your `permission_checker` function is correctly implemented
+- Check that required permissions are properly configured in the `permissions` dict
+- Ensure `current_user_dependency` is returning the expected user object
+
+#### N+1 query performance issues with relationships
+- The router includes batch loading optimization for one-to-many relationships
+- This is automatically enabled when using `join_list_fields` in your schema
+- For additional optimization, consider using SQLAlchemy's `selectinload` or `joinedload`
+
+### Getting Help
+
+If you encounter issues not covered here:
+1. Check the [documentation](https://fastapi-crudrouter.awtkns.com)
+2. Search [existing issues](https://github.com/awtkns/fastapi-crudrouter/issues)
+3. Create a new issue with:
+   - Python version
+   - fastapi-crudrouter version
+   - SQLAlchemy version
+   - Minimal code example reproducing the issue
+   - Full error traceback
+
+## Contributing
+
+Contributions are welcome! Here's how you can help:
+
+### Development Setup
+
+1. Fork the repository
+2. Clone your fork:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/fastapi-crudrouter.git
+   cd fastapi-crudrouter
+   ```
+
+3. Install development dependencies:
+   ```bash
+   pip install -r tests/dev.requirements.txt
+   ```
+
+4. Create a new branch for your feature:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+### Code Quality Standards
+
+- **Linting**: Code must pass flake8 with max line length of 88 characters
+- **Type Checking**: All code must pass mypy strict type checking
+- **Tests**: New features must include tests
+- **Documentation**: Public functions and classes must have Google-style docstrings
+
+### Running Quality Checks
+
+```bash
+# Run linting
+flake8
+
+# Run type checking
+mypy fastapi_crudrouter/
+
+# Run tests
+pytest
+
+# Run all checks
+make lint && make test
+```
+
+### Submitting Changes
+
+1. Ensure all tests pass and code quality checks succeed
+2. Commit your changes with clear, descriptive messages
+3. Push to your fork
+4. Create a Pull Request with:
+   - Clear description of changes
+   - Reference to any related issues
+   - Screenshots if UI changes are involved
+
+### Code of Conduct
+
+- Be respectful and inclusive
+- Focus on constructive feedback
+- Help others learn and grow
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- Built on top of [FastAPI](https://fastapi.tiangolo.com/)
+- Powered by [SQLAlchemy](https://www.sqlalchemy.org/)
+- Inspired by the need for rapid API development
