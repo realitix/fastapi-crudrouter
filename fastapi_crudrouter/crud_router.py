@@ -56,7 +56,6 @@ See Also:
     - optional_schema_factory: PATCH schema generation
 """
 
-import math
 from types import UnionType
 from typing import (
     Any,
@@ -78,6 +77,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
 from pydantic import BaseModel, create_model
 
+from .config import CRUDConfig, default_config
+from .filtering import FilterBuilder, OrderByBuilder
+from .logging import CRUDLogger
+from .pagination import PaginationResult as PaginationResultBuilder
+from .pagination import PaginationValidator
+from .permissions import AccessChecker, PermissionChecker
+from .query_builder import QueryBuilder
 from .schema_factory import (
     create_filter,
     get_pk_type,
@@ -87,7 +93,7 @@ from .schema_factory import (
 )
 
 try:
-    from sqlalchemy import delete, desc, func
+    from sqlalchemy import delete, func
     from sqlalchemy import inspect as sa_inspect
     from sqlalchemy.exc import IntegrityError, NoResultFound
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -353,8 +359,12 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         permissions: Optional[dict[str, Any]] = None,
         create_validator: Optional[Callable] = None,
         update_validator: Optional[Callable] = None,
+        config: Optional[CRUDConfig] = None,
         **kwargs: Any,
     ) -> None:
+        # 0. Initialize configuration
+        self.config = config or default_config
+
         # 1. Initialize base attributes
         self._init_base_attributes(schema, db_model, db, raise_callback, paginate)
 
@@ -430,6 +440,13 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             col.key: getattr(db_model, col.key) for col in sa_inspect(db_model).columns
         }
 
+        # Initialize helper classes for modular architecture
+        self._filter_builder = FilterBuilder(db_model)
+        self._order_builder = OrderByBuilder(db_model, self._pk)
+        self._pagination_validator = PaginationValidator(max_limit=paginate)
+        self._query_builder = QueryBuilder(db_model)
+        self._logger = CRUDLogger(db_model.__name__)
+
     def _init_security_hooks(  # pylint: disable=too-many-positional-arguments
         self,
         current_user_dependency: Optional[Callable],
@@ -441,11 +458,19 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         update_validator: Optional[Callable],
     ) -> None:
         """Initialize security hooks and validators"""
+        # Keep original attributes for backward compatibility
         self.access_checker = access_checker
         self.permission_checker = permission_checker
         self.permissions = permissions or {}
         self.create_validator = create_validator
         self.update_validator = update_validator
+
+        # Initialize helper classes for security
+        self._permission_checker = PermissionChecker(
+            permission_checker=permission_checker,
+            permissions=permissions,
+        )
+        self._access_checker = AccessChecker(access_checker=access_checker)
 
         # Wrap hooks in Depends() for FastAPI injection
         if current_user_dependency:
@@ -1079,91 +1104,18 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         filters: Optional[PYDANTIC_SCHEMA],
         contextual_filters: dict,
     ) -> Any:
-        """Apply filters to query"""
-
-        def apply_special_filter(query_src: Any, key: str, value: Any):
-            """Apply special filter operators (__gte, __lte, __like, __in)"""
-            filter_key, filter_op = key.split("__")
-            col = self._get_model_column(filter_key)
-
-            if filter_op == "gte":
-                return query_src.where(col >= value)
-            if filter_op == "lte":
-                return query_src.where(col <= value)
-            if filter_op == "like":
-                return query_src.where(col.ilike(f"%{value}%"))
-            if filter_op == "in":
-                return query_src.where(col.in_(value))
-            return query_src
-
-        # Apply contextual filters first
-        if contextual_filters and isinstance(contextual_filters, dict):
-            for k, v in contextual_filters.items():
-                if v is None:
-                    continue
-                if "__" in k:
-                    query = apply_special_filter(query, k, v)
-                else:
-                    col = self._get_model_column(k)
-                    query = query.where(col == v)
-
-        # Apply user filters
-        if filters:
-            filter_dict = (
-                filters.model_dump()
-                if hasattr(filters, "model_dump")
-                else filters
-                if isinstance(filters, dict)
-                else None
-            )
-
-            if filter_dict:
-                for k, v in filter_dict.items():
-                    if v is None:
-                        continue
-
-                    metadata = self._get_filter_metadata(k)
-
-                    if callable(metadata):
-                        query = metadata(query, v)
-                    elif metadata:
-                        query = query.join(metadata.class_).where(metadata == v)
-                    elif "__" in k:
-                        query = apply_special_filter(query, k, v)
-                    else:
-                        col = self._get_model_column(k)
-                        query = query.where(col == v)
-
-        return query.select_from(self.db_model)
+        """Apply filters to query using FilterBuilder"""
+        return self._filter_builder.apply_filters(
+            query,
+            filters,
+            contextual_filters=contextual_filters,
+            filter_metadata_getter=self._get_filter_metadata,
+        )
 
     def _get_order_by(self, pagination: PAGINATION) -> Any:
-        """Get order by clause from pagination"""
+        """Get order by clause from pagination using OrderByBuilder"""
         order_by = pagination.get("order_by")
-        if not order_by:
-            return desc(self._get_model_column(self._pk))
-
-        order_by_parts = order_by.split("__")
-        if len(order_by_parts) == 2:
-            order_by_field, order_by_direction = order_by_parts
-        else:
-            order_by_field = order_by_parts[0]
-            order_by_direction = "ASC"
-
-        # Validation: Reject private/dunder attributes (security)
-        if order_by_field.startswith("_"):
-            return desc(self._get_model_column(self._pk))
-
-        # Validation: Check that field exists
-        if not hasattr(self.db_model, order_by_field):
-            return desc(self._get_model_column(self._pk))
-
-        field_attr = self._get_model_column(order_by_field)
-
-        # Validation: Only allow valid directions
-        if order_by_direction not in ("ASC", "DESC"):
-            order_by_direction = "ASC"
-
-        return desc(field_attr) if order_by_direction == "DESC" else field_attr
+        return self._order_builder.get_order_by(order_by)
 
     async def _execute_paginated_query(
         self, db: AsyncSession, query: Any, limit: Optional[int], skip: int
@@ -1231,15 +1183,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         page: int,
         limit: Optional[int],
     ) -> GetAllResult:
-        """Build paginated response"""
-        return {
-            "pagination": {
-                "total_records": total_count,
-                "total_pages": math.ceil(total_count / limit) if limit else 1,
-                "current_page": page,
-            },
-            "data": data,
-        }
+        """Build paginated response using PaginationResult"""
+        result = PaginationResultBuilder.build(data, total_count, page, limit)
+        return result  # type: ignore[return-value]
 
     def _get_one(self) -> Callable[..., Coroutine[Any, Any, Model]]:
         """Get one item by ID"""
@@ -1460,7 +1406,11 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             await db.execute(delete(self.db_model))
             await db.commit()
             return await self._get_all()(
-                db=db, pagination={"page": 1, "limit": None}, filters=None
+                db=db,
+                pagination={"page": 1, "limit": None, "skip": 0, "order_by": None},
+                filters=None,
+                contextual_filters={},
+                user=None,
             )
 
         return route
