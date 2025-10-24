@@ -63,7 +63,13 @@ def optional_schema_factory(
 
     Preserves all validators and FieldInfo metadata (aliases, constraints, etc.).
     Uses shallow copy which is faster than deepcopy while preserving all attributes.
+
+    Field shadowing is intentional here - we deliberately override parent fields
+    to make them optional for PATCH operations. The warning is suppressed as this
+    is the expected behavior for partial update schemas.
     """
+    import warnings
+
     fields = {}
     for field_name, field_info in schema_cls.model_fields.items():
         if field_name != pk_field_name:
@@ -77,13 +83,22 @@ def optional_schema_factory(
 
             fields[field_name] = (Optional[field_info.annotation], new_field_info)
 
-    # Create new model with __base__ to inherit validators
-    new_model = create_model(  # type: ignore[call-overload]
-        f"{schema_cls.__name__}{name}",
-        __base__=schema_cls,
-        __module__=schema_cls.__module__,
-        **fields,
-    )
+    # Suppress field shadowing warnings - the shadowing is intentional
+    # We deliberately override parent fields to make them optional for PATCH
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*shadows an attribute in parent.*",
+            category=UserWarning,
+        )
+
+        # Create new model with __base__ to inherit validators
+        new_model = create_model(  # type: ignore[call-overload]
+            f"{schema_cls.__name__}{name}",
+            __base__=schema_cls,
+            __module__=schema_cls.__module__,
+            **fields,
+        )
 
     return new_model
 
