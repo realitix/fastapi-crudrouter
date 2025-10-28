@@ -249,7 +249,8 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         permission_checker: Function to check permissions
         permissions: Dict mapping route names to permission requirements
         create_validator: Custom validator for create operations
-        update_validator: Custom validator for update operations
+        update_validator: Custom validator for update operations.
+            Signature: async def(item_id: int, data: UpdateSchema, user: User, db: AsyncSession) -> UpdateSchema
 
     Args:
         schema: Pydantic schema for the model
@@ -277,7 +278,8 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         permission_checker: Function to check if user has permission
         permissions: Dict of permissions required per route
         create_validator: Custom validator for create operations
-        update_validator: Custom validator for update operations
+        update_validator: Custom validator for update operations.
+            Signature: async def(item_id: int, data: UpdateSchema, user: User, db: AsyncSession) -> UpdateSchema
         **kwargs: Additional arguments passed to APIRouter
 
     Examples:
@@ -844,7 +846,11 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         for field, annotation in remove_operator_fields(fields_dict).items():
             if not hasattr(annotation, "metadata") or not annotation.metadata:
                 if hasattr(self.db_model, field):
-                    base_class_fields.append(getattr(self.db_model, field))
+                    # Only include actual SQLAlchemy columns, not Python properties
+                    attr = getattr(self.db_model, field)
+                    # Check if it's an InstrumentedAttribute (SQLAlchemy column)
+                    if hasattr(attr, 'property') and hasattr(attr.property, 'columns'):
+                        base_class_fields.append(attr)
             else:
                 attribute = annotation.metadata[0]
                 # Pydantic v2 only
@@ -1297,7 +1303,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
             # Business validation (optional)
             if self.update_validator and user:
-                model = await self.update_validator(model, user, db)
+                model = await self.update_validator(item_id, model, user, db)
 
             try:
                 db_model: Model = await db.get(self.db_model, item_id)
@@ -1357,7 +1363,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
             # Business validation (optional)
             if self.update_validator and user:
-                model = await self.update_validator(model, user, db)
+                model = await self.update_validator(item_id, model, user, db)
 
             try:
                 db_model: Model = await db.get(self.db_model, item_id)

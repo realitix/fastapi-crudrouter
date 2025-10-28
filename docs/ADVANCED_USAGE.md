@@ -340,14 +340,24 @@ router = CRUDRouter(
 ### Update Validator
 ```python
 async def validate_user_update(
+    item_id: int,      # ID of the resource being updated
     data: UserUpdate,
     user: User,
     db: AsyncSession
 ) -> UserUpdate:
+    # Fetch existing resource to check its state
+    existing = await db.get(User, item_id)
+    if not existing:
+        raise HTTPException(404, "User not found")
+
     # Prevent non-admin from promoting users
     if hasattr(data, "role") and data.role == "admin":
         if not user.is_admin:
             raise HTTPException(403, "Cannot promote to admin")
+
+    # Prevent updating locked resources
+    if existing.is_locked and not user.is_admin:
+        raise HTTPException(400, "Cannot update locked user")
 
     return data
 
