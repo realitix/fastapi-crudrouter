@@ -862,8 +862,10 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     join_list_fields[field] = (attribute[0], foreign_key, read_cls)
                 elif callable(attribute):
                     custom_func_fields[field] = attribute
-                else:
+                elif hasattr(attribute, 'class_'):
+                    # Only treat as join field if it's a SQLAlchemy relationship (has .class_ attribute)
                     join_fields[field] = (attribute, type_can_be_none(field_annotation))
+                # Otherwise ignore (likely a Pydantic validation constraint like Gt, Ge, Le, Lt)
 
         return base_class_fields, join_fields, join_list_fields, custom_func_fields
 
