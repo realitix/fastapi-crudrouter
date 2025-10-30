@@ -11,9 +11,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 import pytest
-from sqlalchemy import Column, Integer, String, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.pool import StaticPool
 
 from fastapi_crudrouter import CRUDRouter
 
@@ -46,16 +47,43 @@ class ItemUpdate(BaseModel):
 @pytest.fixture(scope="function")
 def test_app_with_int_pk():
     """Create test app with int primary key and custom /deleted route."""
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    import asyncio
 
-    def get_db():
-        db = SessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
+    # Get or create event loop (same pattern as implementations/sqlalchemy_.py)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    # Create async engine and tables synchronously
+    async def _setup():
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
+
+        # Create tables async
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        return engine
+
+    engine = loop.run_until_complete(_setup())
+
+    AsyncSessionLocal = async_sessionmaker(
+        autocommit=False, autoflush=False, bind=engine
+    )
+
+    async def get_db():
+        async with AsyncSessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
     app = FastAPI()
 
@@ -77,7 +105,13 @@ def test_app_with_int_pk():
 
     app.include_router(router)
 
-    return app, SessionLocal
+    yield app
+
+    # Cleanup
+    async def _cleanup():
+        await engine.dispose()
+
+    loop.run_until_complete(_cleanup())
 
 
 class TestPathConvertersIntPK:
@@ -85,24 +119,22 @@ class TestPathConvertersIntPK:
 
     def test_int_pk_matches_numbers(self, test_app_with_int_pk):
         """Test that /{item_id:int} matches numeric IDs."""
-        app, SessionLocal = test_app_with_int_pk
-
-        # Create an item
-        db = SessionLocal()
-        item = Item(id=1, name="Test Item")
-        db.add(item)
-        db.commit()
-        db.close()
+        app = test_app_with_int_pk
 
         with TestClient(app) as client:
+            # Create an item via POST request
+            create_response = client.post("/items", json={"name": "Test Item"})
+            assert create_response.status_code == 201
+            item_id = create_response.json()["id"]
+
             # Numeric ID should match /{item_id:int}
-            response = client.get("/items/1")
+            response = client.get(f"/items/{item_id}")
             assert response.status_code == 200
-            assert response.json()["id"] == 1
+            assert response.json()["name"] == "Test Item"
 
     def test_int_pk_rejects_non_numeric_strings(self, test_app_with_int_pk):
         """Test that /{item_id:int} does NOT match non-numeric strings."""
-        app, SessionLocal = test_app_with_int_pk
+        app = test_app_with_int_pk
 
         with TestClient(app) as client:
             # "deleted" should NOT match /{item_id:int}
@@ -115,7 +147,7 @@ class TestPathConvertersIntPK:
 
     def test_custom_route_no_conflict_with_int_pk(self, test_app_with_int_pk):
         """Test that custom routes like /deleted don't conflict with /{item_id:int}."""
-        app, SessionLocal = test_app_with_int_pk
+        app = test_app_with_int_pk
 
         with TestClient(app) as client:
             # Custom /deleted route should be accessible
@@ -123,20 +155,19 @@ class TestPathConvertersIntPK:
             assert response.status_code == 200
             assert "message" in response.json()
 
-            # Numeric routes should still work
-            db = SessionLocal()
-            item = Item(id=999, name="Another Item")
-            db.add(item)
-            db.commit()
-            db.close()
+            # Create an item via POST request
+            create_response = client.post("/items", json={"name": "Another Item"})
+            assert create_response.status_code == 201
+            item_id = create_response.json()["id"]
 
-            response = client.get("/items/999")
+            # Numeric routes should still work
+            response = client.get(f"/items/{item_id}")
             assert response.status_code == 200
-            assert response.json()["id"] == 999
+            assert response.json()["name"] == "Another Item"
 
     def test_invalid_numeric_id_returns_404(self, test_app_with_int_pk):
         """Test that non-existent numeric ID returns 404."""
-        app, SessionLocal = test_app_with_int_pk
+        app = test_app_with_int_pk
 
         with TestClient(app) as client:
             # Valid numeric format but non-existent item
@@ -151,31 +182,23 @@ class TestPathConverterMapping:
         """Test that int type maps to 'int' converter."""
         from fastapi_crudrouter import CRUDRouter
 
-        # Create a minimal router to test the method
-        class DummyModel:
-            __tablename__ = "dummy"
-            __table__ = type(
-                "Table",
-                (),
-                {
-                    "primary_key": type(
-                        "PK",
-                        (),
-                        {"columns": type("Cols", (), {"keys": lambda: ["id"]})()},
-                    )()
-                },
-            )()
+        # Create a real SQLAlchemy model with int PK
+        ModelBase = declarative_base()
 
-        class DummySchema(BaseModel):
+        class IntPKModel(ModelBase):
+            __tablename__ = "int_pk_test"
+            id = Column(Integer, primary_key=True)
+
+        class IntPKSchema(BaseModel):
             id: int
 
-        def dummy_db():
+        async def dummy_db():
             yield None
 
         router = CRUDRouter(
-            schema=DummySchema,
-            create_schema=DummySchema,
-            db_model=DummyModel,
+            schema=IntPKSchema,
+            create_schema=IntPKSchema,
+            db_model=IntPKModel,
             db=dummy_db,
             get_all_route=False,
             get_one_route=False,
@@ -191,30 +214,23 @@ class TestPathConverterMapping:
         """Test that str type maps to 'str' converter."""
         from fastapi_crudrouter import CRUDRouter
 
-        class DummyModel:
-            __tablename__ = "dummy"
-            __table__ = type(
-                "Table",
-                (),
-                {
-                    "primary_key": type(
-                        "PK",
-                        (),
-                        {"columns": type("Cols", (), {"keys": lambda: ["id"]})()},
-                    )()
-                },
-            )()
+        # Create a real SQLAlchemy model with str PK
+        ModelBase = declarative_base()
 
-        class DummySchema(BaseModel):
+        class StrPKModel(ModelBase):
+            __tablename__ = "str_pk_test"
+            id = Column(String, primary_key=True)
+
+        class StrPKSchema(BaseModel):
             id: str
 
-        def dummy_db():
+        async def dummy_db():
             yield None
 
         router = CRUDRouter(
-            schema=DummySchema,
-            create_schema=DummySchema,
-            db_model=DummyModel,
+            schema=StrPKSchema,
+            create_schema=StrPKSchema,
+            db_model=StrPKModel,
             db=dummy_db,
             get_all_route=False,
             get_one_route=False,
