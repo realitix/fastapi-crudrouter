@@ -4,6 +4,7 @@ from copy import copy
 from datetime import date, datetime
 from types import UnionType
 from typing import Annotated, Any, Optional, Type, Union, get_args, get_origin
+import warnings
 
 from pydantic import BaseModel, create_model
 
@@ -80,8 +81,6 @@ def optional_schema_factory(
     to make them optional for PATCH operations. The warning is suppressed as this
     is the expected behavior for partial update schemas.
     """
-    import warnings
-
     fields = {}
     for field_name, field_info in schema_cls.model_fields.items():
         if field_name != pk_field_name:

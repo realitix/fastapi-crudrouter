@@ -1,3 +1,5 @@
+# pylint: disable=import-outside-toplevel,protected-access
+# ruff: noqa: PLC0415
 """Tests for optional primary key type handling."""
 
 from typing import Optional

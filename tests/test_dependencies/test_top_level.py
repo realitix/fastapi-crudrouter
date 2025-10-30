@@ -40,7 +40,8 @@ class TestTopLevelDependencies:
         assert client.post(url, headers=AUTH).status_code != 401
         assert client.delete(url, headers=AUTH).status_code == 200
 
-        for id_ in [-1, 1, 0, 14]:
+        # Negative IDs don't match /{item_id:int} converter
+        for id_ in [0, 1, 14]:
             assert client.get(f"{url}/{id_}", headers=AUTH).status_code != 401
             assert client.put(f"{url}/{id_}", headers=AUTH).status_code != 401
             assert client.delete(f"{url}/{id_}", headers=AUTH).status_code != 401
@@ -51,7 +52,19 @@ class TestTopLevelDependencies:
         assert client.get(url).status_code == 401
         assert client.post(url).status_code == 401
 
-        for id_ in [-1, 1, 0, 14]:
+        # Negative IDs don't match /{item_id:int} converter
+        for id_ in [0, 1, 14]:
             assert client.get(f"{url}/{id_}").status_code == 401
             assert client.put(f"{url}/{id_}").status_code == 401
             assert client.delete(f"{url}/{id_}").status_code == 401
+
+    @staticmethod
+    def test_negative_ids_return_404(client, url):
+        """Test that negative IDs return 404 (don't match /{item_id:int}).
+
+        Starlette's :int converter only matches non-negative integers.
+        This is by design - negative IDs are not valid in most REST APIs.
+        """
+        assert client.get(f"{url}/-1").status_code == 404
+        assert client.put(f"{url}/-1").status_code == 404
+        assert client.delete(f"{url}/-1").status_code == 404

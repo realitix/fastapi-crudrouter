@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """FastAPI CRUD Router - Automatic CRUD route generation.
 
 This module provides the CRUDRouter class that automatically generates
@@ -72,6 +73,7 @@ from typing import (
     get_args,
     get_origin,
 )
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.types import DecoratedCallable
@@ -597,19 +599,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             >>> # Generates route: /{item_id:int} which only matches numbers
             >>> # Custom route /deleted won't conflict with /{item_id:int}
         """
-        from uuid import UUID
-
-        if self._pk_type == int:
+        if self._pk_type is int:
             return "int"
-        elif self._pk_type == UUID:
+        if self._pk_type is UUID:
             return "uuid"
-        elif self._pk_type == str:
+        if self._pk_type is str:
             return "str"
-        elif self._pk_type == float:
+        if self._pk_type is float:
             return "float"
-        else:
-            # Fallback to str for unknown types (most permissive)
-            return "str"
+        # Fallback to str for unknown types (most permissive)
+        return "str"
 
     def _init_router(  # pylint: disable=too-many-positional-arguments
         self,
