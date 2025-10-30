@@ -20,12 +20,15 @@ except ImportError:
 def get_pk_type(schema: Type[BaseModel], pk_field: str) -> Any:
     """Extract primary key type from Pydantic schema.
 
+    Unwraps Optional/Union types to get the base type for path converter mapping.
+
     Args:
         schema: The Pydantic schema to extract from
         pk_field: Name of the primary key field
 
     Returns:
-        The type annotation of the primary key field, or int if not found
+        The base type annotation of the primary key field (unwrapped from
+        Optional/Union), or int if not found
 
     Examples:
         >>> class User(BaseModel):
@@ -33,10 +36,19 @@ def get_pk_type(schema: Type[BaseModel], pk_field: str) -> Any:
         ...     name: str
         >>> get_pk_type(User, "id")
         <class 'int'>
+        >>> class User(BaseModel):
+        ...     id: int | None = None
+        ...     name: str
+        >>> get_pk_type(User, "id")
+        <class 'int'>
     """
     try:
         field_annotation = schema.model_fields[pk_field].annotation
-        return field_annotation if field_annotation is not None else int
+        if field_annotation is not None:
+            # Unwrap Optional/Union/Annotated to get base type
+            # e.g., int | None -> int, Optional[int] -> int
+            return extract_python_type(field_annotation)
+        return int
     except (KeyError, AttributeError):
         return int
 

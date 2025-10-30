@@ -581,6 +581,36 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
         return any(is_route_enabled(route) for route in route_config.values())
 
+    def _get_path_converter(self) -> str:
+        """Get Starlette path converter type for primary key.
+
+        Maps Python types to Starlette path converters to enable type-specific
+        routing and prevent route conflicts with custom endpoints.
+
+        Returns:
+            str: Path converter type ("int", "uuid", "str", or "float")
+
+        Examples:
+            >>> # For Invoice model with id: int
+            >>> router._get_path_converter()
+            'int'
+            >>> # Generates route: /{item_id:int} which only matches numbers
+            >>> # Custom route /deleted won't conflict with /{item_id:int}
+        """
+        from uuid import UUID
+
+        if self._pk_type == int:
+            return "int"
+        elif self._pk_type == UUID:
+            return "uuid"
+        elif self._pk_type == str:
+            return "str"
+        elif self._pk_type == float:
+            return "float"
+        else:
+            # Fallback to str for unknown types (most permissive)
+            return "str"
+
     def _init_router(  # pylint: disable=too-many-positional-arguments
         self,
         db_model: ModelType,
@@ -602,6 +632,12 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
     def _register_routes(self, route_config: dict[str, Any]) -> None:
         """Register all enabled routes"""
+
+        # Build path with type converter for item_id routes
+        # Example: "/{item_id:int}" for int PKs, "/{item_id:uuid}" for UUID PKs
+        # This prevents route conflicts (e.g., /deleted won't match /{item_id:int})
+        path_converter = self._get_path_converter()
+        item_id_path = f"/{{item_id:{path_converter}}}"
 
         # Create response models
         class PaginationResultModel(BaseModel):
@@ -657,7 +693,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
         if route_config["get_one"]:
             self._add_api_route(
-                "/{item_id}",
+                item_id_path,
                 self._get_one(),
                 methods=["GET"],
                 response_model=self.schema,
@@ -669,7 +705,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         if route_config["update"]:
             # PUT route - full replacement
             self._add_api_route(
-                "/{item_id}",
+                item_id_path,
                 self._update(),
                 methods=["PUT"],
                 response_model=self.schema,
@@ -680,7 +716,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
             # PATCH route - partial update
             self._add_api_route(
-                "/{item_id}",
+                item_id_path,
                 self._patch(),
                 methods=["PATCH"],
                 response_model=self.schema,
@@ -691,7 +727,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
         if route_config["delete_one"]:
             self._add_api_route(
-                "/{item_id}",
+                item_id_path,
                 self._delete_one(),
                 methods=["DELETE"],
                 response_model=None,
@@ -754,10 +790,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
     def remove_api_route(self, path: str, methods: List[str]) -> None:
         methods_ = set(methods)
+        full_path = f"{self.prefix}{path}"
 
         for route in self.routes:
+            # Match both path_format (normalized, for untyped overrides like
+            # /{item_id}) and path (raw, for typed overrides like /{item_id:int})
+            # This allows users to override routes with or without type converters.
+            route_path_format = getattr(route, "path_format", route.path)  # type: ignore
+            route_path = route.path  # type: ignore
             if (
-                route.path == f"{self.prefix}{path}"  # type: ignore
+                full_path in (route_path_format, route_path)
                 and route.methods == methods_  # type: ignore
             ):
                 self.routes.remove(route)
@@ -849,7 +891,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     # Only include actual SQLAlchemy columns, not Python properties
                     attr = getattr(self.db_model, field)
                     # Check if it's an InstrumentedAttribute (SQLAlchemy column)
-                    if hasattr(attr, 'property') and hasattr(attr.property, 'columns'):
+                    if hasattr(attr, "property") and hasattr(attr.property, "columns"):
                         base_class_fields.append(attr)
             else:
                 attribute = annotation.metadata[0]
@@ -862,10 +904,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     join_list_fields[field] = (attribute[0], foreign_key, read_cls)
                 elif callable(attribute):
                     custom_func_fields[field] = attribute
-                elif hasattr(attribute, 'class_'):
+                elif hasattr(attribute, "class_"):
                     # Only treat as join field if it's a SQLAlchemy relationship (has .class_ attribute)
                     join_fields[field] = (attribute, type_can_be_none(field_annotation))
-                # Otherwise ignore (likely a Pydantic validation constraint like Gt, Ge, Le, Lt)
+                # Metadata exists but is not a relationship, callable, or list
+                # Check if it's still a real DB column (e.g., field with Pydantic constraints)
+                elif hasattr(self.db_model, field):
+                    attr = getattr(self.db_model, field)
+                    if hasattr(attr, "property") and hasattr(attr.property, "columns"):
+                        base_class_fields.append(attr)
+                    # Otherwise ignore (Pydantic constraint on computed field)
 
         return base_class_fields, join_fields, join_list_fields, custom_func_fields
 

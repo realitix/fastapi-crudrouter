@@ -30,6 +30,7 @@ def overloaded_client(request):
     for r in routers:
         r: APIRouter
 
+        # Add override routes to replace default CRUD routes
         @r.api_route("", methods=["GET"])
         def overloaded_get_all():
             return GET_ALL
