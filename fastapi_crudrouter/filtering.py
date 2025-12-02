@@ -148,15 +148,19 @@ class OrderByBuilder:
         self,
         model: Union[Type["DeclarativeBase"], DeclarativeMeta],
         default_pk: str,
+        default_order_by: Optional[str] = None,
     ):
         """Initialize order by builder.
 
         Args:
             model: SQLAlchemy model class
             default_pk: Default primary key field for ordering
+            default_order_by: Custom default ordering (e.g., "display_order" or
+                "created_at__DESC"). If not provided, defaults to pk DESC.
         """
         self.model = model
         self.default_pk = default_pk
+        self.default_order_by = default_order_by
 
     def get_order_by(self, order_by_param: Optional[str]) -> Any:
         """Get ORDER BY clause from parameter.
@@ -174,12 +178,26 @@ class OrderByBuilder:
             >>> order = builder.get_order_by("age")
             >>> # Returns: User.age
             >>> order = builder.get_order_by(None)
-            >>> # Returns: desc(User.id)
+            >>> # Returns: desc(User.id) or default_order_by if configured
         """
+        # If no order_by param provided, use default_order_by or fallback to pk DESC
         if not order_by_param:
+            if self.default_order_by:
+                return self._parse_order_by(self.default_order_by)
             return desc(getattr(self.model, self.default_pk))
 
-        parts = order_by_param.split("__")
+        return self._parse_order_by(order_by_param)
+
+    def _parse_order_by(self, order_by_str: str) -> Any:
+        """Parse order_by string and return SQLAlchemy expression.
+
+        Args:
+            order_by_str: Order by string (e.g., "name__DESC", "age")
+
+        Returns:
+            SQLAlchemy order by expression
+        """
+        parts = order_by_str.split("__")
         if len(parts) == 2:
             field_name, direction = parts
         else:

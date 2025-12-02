@@ -57,6 +57,7 @@ See Also:
     - optional_schema_factory: PATCH schema generation
 """
 
+from datetime import datetime
 from types import UnionType
 from typing import (
     Any,
@@ -253,6 +254,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         create_validator: Custom validator for create operations
         update_validator: Custom validator for update operations.
             Signature: async def(item_id: int, data: UpdateSchema, user: User, db: AsyncSession) -> UpdateSchema
+        delete_validator: Custom validator for delete operations.
+            Signature: async def(item_id: int, user: User, db: AsyncSession) -> None
+            Raises HTTPException if deletion is not allowed.
 
     Args:
         schema: Pydantic schema for the model
@@ -363,6 +367,26 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         permissions: Optional[dict[str, Any]] = None,
         create_validator: Optional[Callable] = None,
         update_validator: Optional[Callable] = None,
+        delete_validator: Optional[Callable] = None,
+        default_order_by: Optional[str] = None,
+        create_defaults: Optional[Callable] = None,
+        # Soft delete configuration
+        soft_delete: bool = False,
+        soft_delete_field: str = "is_deleted",
+        soft_delete_value: Any = True,
+        soft_delete_timestamp_field: Optional[str] = None,
+        soft_delete_by_field: Optional[str] = None,
+        include_deleted_param: str = "include_deleted",
+        # Post-action hooks
+        after_create: Optional[Callable] = None,
+        after_update: Optional[Callable] = None,
+        after_delete: Optional[Callable] = None,
+        # Bulk operations configuration
+        bulk_create_route: Union[bool, DEPENDENCIES] = False,
+        bulk_update_route: Union[bool, DEPENDENCIES] = False,
+        bulk_delete_route: Union[bool, DEPENDENCIES] = False,
+        bulk_max_items: int = 100,
+        bulk_partial_success: bool = True,
         config: Optional[CRUDConfig] = None,
         **kwargs: Any,
     ) -> None:
@@ -370,9 +394,21 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         self.config = config or default_config
 
         # 1. Initialize base attributes
-        self._init_base_attributes(schema, db_model, db, raise_callback, paginate)
+        self._init_base_attributes(
+            schema, db_model, db, raise_callback, paginate, default_order_by
+        )
 
-        # 2. Initialize security hooks
+        # 1b. Initialize soft delete configuration
+        self._init_soft_delete(
+            soft_delete,
+            soft_delete_field,
+            soft_delete_value,
+            soft_delete_timestamp_field,
+            soft_delete_by_field,
+            include_deleted_param,
+        )
+
+        # 2. Initialize security hooks and lifecycle hooks
         self._init_security_hooks(
             current_user_dependency,
             contextual_filter,
@@ -381,6 +417,20 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             permissions,
             create_validator,
             update_validator,
+            delete_validator,
+            create_defaults,
+            after_create,
+            after_update,
+            after_delete,
+        )
+
+        # 2b. Initialize bulk operations configuration
+        self._init_bulk_operations(
+            bulk_create_route,
+            bulk_update_route,
+            bulk_delete_route,
+            bulk_max_items,
+            bulk_partial_success,
         )
 
         # 3. Configure schemas
@@ -420,6 +470,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         db: SessionGenerator,
         raise_callback: Optional[Callable],
         paginate: Optional[int],
+        default_order_by: Optional[str] = None,
     ) -> None:
         """Initialize basic attributes"""
         self.schema = schema
@@ -427,6 +478,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         self.db_func = db
         self.raise_callback = raise_callback
         self.paginate_limit = paginate
+        self.default_order_by = default_order_by
 
         # Set up primary key with validation
         pk_columns = db_model.__table__.primary_key.columns.keys()  # type: ignore[union-attr]
@@ -446,10 +498,32 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
         # Initialize helper classes for modular architecture
         self._filter_builder = FilterBuilder(db_model)
-        self._order_builder = OrderByBuilder(db_model, self._pk)
+        self._order_builder = OrderByBuilder(db_model, self._pk, default_order_by)
         self._pagination_validator = PaginationValidator(max_limit=paginate)
         self._query_builder = QueryBuilder(db_model)
         self._logger = CRUDLogger(db_model.__name__)
+
+    def _init_soft_delete(  # pylint: disable=too-many-positional-arguments
+        self,
+        soft_delete: bool,
+        soft_delete_field: str,
+        soft_delete_value: Any,
+        soft_delete_timestamp_field: Optional[str],
+        soft_delete_by_field: Optional[str],
+        include_deleted_param: str,
+    ) -> None:
+        """Initialize soft delete configuration"""
+        self.soft_delete = soft_delete
+        self.soft_delete_field = soft_delete_field
+        self.soft_delete_value = soft_delete_value
+        self.soft_delete_timestamp_field = soft_delete_timestamp_field
+        self.soft_delete_by_field = soft_delete_by_field
+        self.include_deleted_param = include_deleted_param
+
+        # Determine the "not deleted" value (inverse of soft_delete_value)
+        self._soft_delete_not_value: Optional[bool] = None
+        if isinstance(soft_delete_value, bool):
+            self._soft_delete_not_value = not soft_delete_value
 
     def _init_security_hooks(  # pylint: disable=too-many-positional-arguments
         self,
@@ -460,14 +534,26 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         permissions: Optional[dict[str, Any]],
         create_validator: Optional[Callable],
         update_validator: Optional[Callable],
+        delete_validator: Optional[Callable],
+        create_defaults: Optional[Callable],
+        after_create: Optional[Callable],
+        after_update: Optional[Callable],
+        after_delete: Optional[Callable],
     ) -> None:
-        """Initialize security hooks and validators"""
+        """Initialize security hooks, validators, and lifecycle hooks"""
         # Keep original attributes for backward compatibility
         self.access_checker = access_checker
         self.permission_checker = permission_checker
         self.permissions = permissions or {}
         self.create_validator = create_validator
         self.update_validator = update_validator
+        self.delete_validator = delete_validator
+        self.create_defaults = create_defaults
+
+        # Lifecycle hooks (post-action)
+        self.after_create = after_create
+        self.after_update = after_update
+        self.after_delete = after_delete
 
         # Initialize helper classes for security
         self._permission_checker = PermissionChecker(
@@ -486,6 +572,21 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             self.contextual_filter_depends = Depends(contextual_filter)
         else:
             self.contextual_filter_depends = Depends(lambda: {})
+
+    def _init_bulk_operations(
+        self,
+        bulk_create_route: Union[bool, DEPENDENCIES],
+        bulk_update_route: Union[bool, DEPENDENCIES],
+        bulk_delete_route: Union[bool, DEPENDENCIES],
+        bulk_max_items: int,
+        bulk_partial_success: bool,
+    ) -> None:
+        """Initialize bulk operations configuration"""
+        self.bulk_create_route = bulk_create_route
+        self.bulk_update_route = bulk_update_route
+        self.bulk_delete_route = bulk_delete_route
+        self.bulk_max_items = bulk_max_items
+        self.bulk_partial_success = bulk_partial_success
 
     def _init_schemas(  # pylint: disable=too-many-positional-arguments
         self,
@@ -734,6 +835,50 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 status_code=204,
                 dependencies=route_config["delete_one"],
                 error_responses=[NOT_FOUND],
+            )
+
+        # Bulk operations routes
+        if self.bulk_create_route:
+            self._add_api_route(
+                "/bulk",
+                self._bulk_create(),
+                methods=["POST"],
+                response_model=dict[str, Any],
+                summary="Bulk Create",
+                status_code=201,
+                dependencies=(
+                    self.bulk_create_route
+                    if isinstance(self.bulk_create_route, list)
+                    else []
+                ),
+            )
+
+        if self.bulk_update_route:
+            self._add_api_route(
+                "/bulk",
+                self._bulk_update(),
+                methods=["PATCH"],
+                response_model=dict[str, Any],
+                summary="Bulk Update",
+                dependencies=(
+                    self.bulk_update_route
+                    if isinstance(self.bulk_update_route, list)
+                    else []
+                ),
+            )
+
+        if self.bulk_delete_route:
+            self._add_api_route(
+                "/bulk",
+                self._bulk_delete(),
+                methods=["DELETE"],
+                response_model=dict[str, Any],
+                summary="Bulk Delete",
+                dependencies=(
+                    self.bulk_delete_route
+                    if isinstance(self.bulk_delete_route, list)
+                    else []
+                ),
             )
 
     def _add_api_route(
@@ -1081,6 +1226,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             filters: self.filter_schema = self.filter_depends,  # type: ignore[name-defined]
             contextual_filters: dict = self.contextual_filter_depends,
             user: Any = self.current_user_depends,
+            include_deleted: bool = False,
         ) -> GetAllResult:
             # 1. Check permissions
             self._check_permission(user, "get_all")
@@ -1091,24 +1237,28 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             # 3. Build base query with joins and custom functions
             query, join_list_fields = self._build_base_query(self.get_all_schema)
 
-            # 4. Apply filters
+            # 4. Apply soft delete filter (exclude deleted items unless include_deleted=True)
+            if self.soft_delete and not include_deleted:
+                query = self._apply_soft_delete_filter(query)
+
+            # 5. Apply filters
             query = self._apply_filters(query, filters, contextual_filters)
 
-            # 5. Count total records (before ordering - ORDER BY breaks COUNT on PostgreSQL)
+            # 6. Count total records (before ordering - ORDER BY breaks COUNT on PostgreSQL)
             count = await self._count_total(db, query)
 
-            # 6. Apply ordering
+            # 7. Apply ordering
             query = query.order_by(self._get_order_by(pagination))
 
-            # 7. Execute query with pagination
+            # 8. Execute query with pagination
             rows = await self._execute_paginated_query(db, query, limit, skip)
 
-            # 8. Process results into models
+            # 9. Process results into models
             db_models = await self._process_results(
                 db, rows, self.get_all_schema, join_list_fields
             )
 
-            # 9. Build paginated response
+            # 10. Build paginated response
             return self._build_paginated_response(db_models, count, page, limit)
 
         return route
@@ -1166,6 +1316,31 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             contextual_filters=contextual_filters,
             filter_metadata_getter=self._get_filter_metadata,
         )
+
+    def _apply_soft_delete_filter(self, query: Any) -> Any:
+        """Apply soft delete filter to exclude deleted items.
+
+        Filters out items where soft_delete_field equals soft_delete_value.
+        For boolean fields with soft_delete_value=True, this filters where is_deleted=False or NULL.
+        """
+        if not self.soft_delete:
+            return query
+
+        soft_delete_col = getattr(self.db_model, self.soft_delete_field, None)
+        if soft_delete_col is None:
+            return query
+
+        if self._soft_delete_not_value is not None:
+            # Boolean field: filter for "not deleted" value
+            query = query.where(
+                (soft_delete_col == self._soft_delete_not_value)
+                | (soft_delete_col.is_(None))
+            )
+        else:
+            # Non-boolean field: filter where field IS NULL
+            query = query.where(soft_delete_col.is_(None))
+
+        return query
 
     def _get_order_by(self, pagination: PAGINATION) -> Any:
         """Get order by clause from pagination using OrderByBuilder"""
@@ -1272,6 +1447,11 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 query = self.compute_custom_func(query, custom_func_fields)
                 query = query.select_from(self.db_model)
                 query = query.where(getattr(self.db_model, self._pk) == item_id)
+
+                # Apply soft delete filter (exclude soft-deleted items)
+                if self.soft_delete:
+                    query = self._apply_soft_delete_filter(query)
+
                 row = (await db.execute(query)).one()
                 # pylint: disable=protected-access
                 row_dict = (
@@ -1306,6 +1486,28 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             ):
                 raise HTTPException(403, "No permission to create resources")
 
+            # Apply create_defaults before validation
+            # Defaults are merged with incoming data (explicit values override defaults)
+            if self.create_defaults and user:
+                defaults = self.create_defaults(user)
+                if defaults:
+                    # Get explicit values from incoming model
+                    model_data = model.model_dump()
+                    model_fields_set = model.model_fields_set
+
+                    # Merge: defaults first, then explicit values override
+                    merged_data = {**defaults}
+                    for key, value in model_data.items():
+                        # Only override if the field was explicitly set in the request
+                        if key in model_fields_set:
+                            merged_data[key] = value
+                        elif key not in merged_data:
+                            # Field not in defaults and not explicitly set: use model value
+                            merged_data[key] = value
+
+                    # Reconstruct model with merged data
+                    model = self.create_schema(**merged_data)
+
             # Business validation
             if self.create_validator and user:
                 model = await self.create_validator(model, user, db)
@@ -1315,6 +1517,17 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 db.add(db_model)
                 await db.commit()
                 await db.refresh(db_model)
+
+                # Call after_create hook (after commit)
+                if self.after_create:
+                    try:
+                        await self.after_create(db_model, user, db)
+                    except Exception as hook_error:  # pylint: disable=broad-except
+                        # Log hook errors but don't fail the main operation
+                        self._logger.error(
+                            f"after_create hook error: {hook_error}"
+                        )
+
                 return await self._get_one()(
                     item_id=getattr(db_model, self._pk), db=db, user=user
                 )
@@ -1374,6 +1587,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                 await db.commit()
                 await db.refresh(db_model)
+
+                # Call after_update hook (after commit)
+                if self.after_update:
+                    try:
+                        await self.after_update(db_model, user, db)
+                    except Exception as hook_error:  # pylint: disable=broad-except
+                        # Log hook errors but don't fail the main operation
+                        self._logger.error(
+                            f"after_update hook error: {hook_error}"
+                        )
 
                 return await self._get_one()(
                     item_id=getattr(db_model, self._pk), db=db, user=user
@@ -1444,6 +1667,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 await db.commit()
                 await db.refresh(db_model)
 
+                # Call after_update hook (after commit)
+                if self.after_update:
+                    try:
+                        await self.after_update(db_model, user, db)
+                    except Exception as hook_error:  # pylint: disable=broad-except
+                        # Log hook errors but don't fail the main operation
+                        self._logger.error(
+                            f"after_update hook error: {hook_error}"
+                        )
+
                 return await self._get_one()(
                     item_id=getattr(db_model, self._pk), db=db, user=user
                 )
@@ -1471,7 +1704,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         return route
 
     def _delete_one(self) -> Callable[..., Coroutine[Any, Any, None]]:
-        """Delete one item by ID"""
+        """Delete one item by ID (soft delete or hard delete based on configuration)"""
 
         async def route(
             item_id: self._pk_type,  # type: ignore[name-defined]
@@ -1496,8 +1729,321 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             if not db_model:
                 raise NOT_FOUND from None
 
-            # Delete the item
-            await db.delete(db_model)
-            await db.commit()
+            # Check if item is already soft-deleted (if soft delete is enabled)
+            if self.soft_delete:
+                soft_delete_col_value = getattr(db_model, self.soft_delete_field, None)
+                if soft_delete_col_value == self.soft_delete_value:
+                    raise NOT_FOUND from None
+
+            # Business validation before delete
+            if self.delete_validator:
+                await self.delete_validator(item_id, user, db)
+
+            if self.soft_delete:
+                # Soft delete: update the soft delete fields
+                setattr(db_model, self.soft_delete_field, self.soft_delete_value)
+
+                # Set timestamp if configured
+                if self.soft_delete_timestamp_field:
+                    setattr(db_model, self.soft_delete_timestamp_field, datetime.utcnow())
+
+                # Set deleted_by if configured and user is available
+                if self.soft_delete_by_field and user:
+                    user_id = getattr(user, "id", None)
+                    if user_id:
+                        setattr(db_model, self.soft_delete_by_field, user_id)
+
+                await db.commit()
+            else:
+                # Hard delete: remove the item from database
+                await db.delete(db_model)
+                await db.commit()
+
+            # Call after_delete hook (after commit)
+            if self.after_delete:
+                try:
+                    await self.after_delete(item_id, user, db)
+                except Exception as hook_error:  # pylint: disable=broad-except
+                    # Log hook errors but don't fail the main operation
+                    self._logger.error(
+                        f"after_delete hook error: {hook_error}"
+                    )
+
+        return route
+
+    # ==================== BULK OPERATIONS ====================
+
+    def _bulk_create(self) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+        """Bulk create multiple items
+
+        Returns:
+            Dict with 'created' list, 'errors' list, 'success_count', 'error_count'
+        """
+
+        async def route(
+            items: List[self.create_schema],  # type: ignore[name-defined]
+            db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,
+        ) -> dict[str, Any]:
+            # Check max items limit
+            if len(items) > self.bulk_max_items:
+                raise HTTPException(
+                    400,
+                    f"Too many items. Maximum allowed: {self.bulk_max_items}",
+                )
+
+            # Permission check
+            self._check_permission(user, "create")
+
+            created_items: List[Any] = []
+            errors: List[dict[str, Any]] = []
+
+            for idx, item in enumerate(items):
+                try:
+                    # Apply create_defaults
+                    if self.create_defaults and user:
+                        defaults = self.create_defaults(user)
+                        if defaults:
+                            item_data = item.model_dump()
+                            item_fields_set = item.model_fields_set
+                            merged_data = {**defaults}
+                            for key, value in item_data.items():
+                                if key in item_fields_set or key not in merged_data:
+                                    merged_data[key] = value
+                            item = self.create_schema(**merged_data)
+
+                    # Business validation
+                    if self.create_validator and user:
+                        item = await self.create_validator(item, user, db)
+
+                    # Create the item
+                    db_model: Model = self.db_model(**item.model_dump())
+                    db.add(db_model)
+                    await db.flush()  # Get the ID without committing
+
+                    created_items.append({
+                        "index": idx,
+                        self._pk: getattr(db_model, self._pk),
+                        "data": item.model_dump(),
+                    })
+
+                    # Call after_create hook (ignore errors to not fail bulk operation)
+                    if self.after_create:
+                        try:  # noqa: SIM105
+                            await self.after_create(db_model, user, db)
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+
+                except Exception as e:  # pylint: disable=broad-except
+                    errors.append({
+                        "index": idx,
+                        "error": str(e),
+                        "data": item.model_dump() if hasattr(item, "model_dump") else {},
+                    })
+                    if not self.bulk_partial_success:
+                        await db.rollback()
+                        raise HTTPException(400, f"Bulk create failed at index {idx}: {e}") from e
+
+            # Commit all successful creations
+            if created_items:
+                await db.commit()
+
+            return {
+                "created": created_items,
+                "errors": errors,
+                "success_count": len(created_items),
+                "error_count": len(errors),
+            }
+
+        return route
+
+    def _bulk_update(self) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+        """Bulk update multiple items
+
+        Input format: List of objects with 'id' (or pk field name) and fields to update
+        Returns:
+            Dict with 'updated' list, 'errors' list, 'success_count', 'error_count'
+        """
+
+        async def route(
+            items: List[dict[str, Any]],
+            db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,
+        ) -> dict[str, Any]:
+            # Check max items limit
+            if len(items) > self.bulk_max_items:
+                raise HTTPException(
+                    400,
+                    f"Too many items. Maximum allowed: {self.bulk_max_items}",
+                )
+
+            # Permission check
+            self._check_permission(user, "update")
+
+            updated_items: List[dict[str, Any]] = []
+            errors: List[dict[str, Any]] = []
+
+            for idx, item_data in enumerate(items):
+                try:
+                    # Get the item ID
+                    item_id = item_data.get(self._pk) or item_data.get("id")
+                    if item_id is None:
+                        raise ValueError(f"Missing '{self._pk}' in item at index {idx}")
+
+                    # Access check
+                    if self.access_checker and user:
+                        await self.access_checker(item_id, user, db)
+
+                    # Get the item from database
+                    db_model = await db.get(
+                        self.db_model, item_id  # type: ignore[arg-type]
+                    )
+                    if not db_model:
+                        raise ValueError(f"Item with {self._pk}={item_id} not found")
+
+                    # Update fields (exclude pk)
+                    update_data = {
+                        k: v for k, v in item_data.items()
+                        if k != self._pk and k != "id" and hasattr(db_model, k)
+                    }
+
+                    for key, value in update_data.items():
+                        setattr(db_model, key, value)
+
+                    await db.flush()
+
+                    updated_items.append({
+                        "index": idx,
+                        self._pk: item_id,
+                        "updated_fields": list(update_data.keys()),
+                    })
+
+                    # Call after_update hook (ignore errors to not fail bulk operation)
+                    if self.after_update:
+                        try:  # noqa: SIM105
+                            await self.after_update(db_model, user, db)
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+
+                except Exception as e:  # pylint: disable=broad-except
+                    errors.append({
+                        "index": idx,
+                        "error": str(e),
+                        self._pk: item_data.get(self._pk) or item_data.get("id"),
+                    })
+                    if not self.bulk_partial_success:
+                        await db.rollback()
+                        raise HTTPException(400, f"Bulk update failed at index {idx}: {e}") from e
+
+            # Commit all successful updates
+            if updated_items:
+                await db.commit()
+
+            return {
+                "updated": updated_items,
+                "errors": errors,
+                "success_count": len(updated_items),
+                "error_count": len(errors),
+            }
+
+        return route
+
+    def _bulk_delete(self) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+        """Bulk delete multiple items
+
+        Input format: List of IDs to delete
+        Returns:
+            Dict with 'deleted_ids' list, 'errors' list, 'success_count', 'error_count'
+        """
+
+        async def route(
+            ids: List[Any],
+            db: AsyncSession = Depends(self.db_func),
+            user: Any = self.current_user_depends,
+        ) -> dict[str, Any]:
+            # Check max items limit
+            if len(ids) > self.bulk_max_items:
+                raise HTTPException(
+                    400,
+                    f"Too many items. Maximum allowed: {self.bulk_max_items}",
+                )
+
+            # Permission check
+            self._check_permission(user, "delete_one")
+
+            deleted_ids: List[Any] = []
+            errors: List[dict[str, Any]] = []
+
+            for idx, item_id in enumerate(ids):
+                try:
+                    # Access check
+                    if self.access_checker and user:
+                        await self.access_checker(item_id, user, db)
+
+                    # Get the item
+                    db_model = await db.get(
+                        self.db_model, item_id  # type: ignore[arg-type]
+                    )
+                    if not db_model:
+                        raise ValueError(f"Item with {self._pk}={item_id} not found")
+
+                    # Check if already soft-deleted
+                    if self.soft_delete:
+                        soft_delete_col_value = getattr(
+                            db_model, self.soft_delete_field, None
+                        )
+                        if soft_delete_col_value == self.soft_delete_value:
+                            raise ValueError(f"Item {item_id} already deleted")
+
+                    # Business validation
+                    if self.delete_validator:
+                        await self.delete_validator(item_id, user, db)
+
+                    # Perform delete (soft or hard)
+                    if self.soft_delete:
+                        setattr(db_model, self.soft_delete_field, self.soft_delete_value)
+                        if self.soft_delete_timestamp_field:
+                            setattr(
+                                db_model,
+                                self.soft_delete_timestamp_field,
+                                datetime.utcnow(),
+                            )
+                        if self.soft_delete_by_field and user:
+                            user_id = getattr(user, "id", None)
+                            if user_id:
+                                setattr(db_model, self.soft_delete_by_field, user_id)
+                    else:
+                        await db.delete(db_model)
+
+                    await db.flush()
+                    deleted_ids.append(item_id)
+
+                    # Call after_delete hook (ignore errors to not fail bulk operation)
+                    if self.after_delete:
+                        try:  # noqa: SIM105
+                            await self.after_delete(item_id, user, db)
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+
+                except Exception as e:  # pylint: disable=broad-except
+                    errors.append({
+                        "index": idx,
+                        self._pk: item_id,
+                        "error": str(e),
+                    })
+                    if not self.bulk_partial_success:
+                        await db.rollback()
+                        raise HTTPException(400, f"Bulk delete failed at index {idx}: {e}") from e
+
+            # Commit all successful deletes
+            if deleted_ids:
+                await db.commit()
+
+            return {
+                "deleted_ids": deleted_ids,
+                "errors": errors,
+                "success_count": len(deleted_ids),
+                "error_count": len(errors),
+            }
 
         return route

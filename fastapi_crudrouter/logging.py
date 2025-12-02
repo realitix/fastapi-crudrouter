@@ -54,3 +54,11 @@ class CRUDLogger:
 
         level = logging.INFO if success else logging.ERROR
         self.logger.log(level, "CRUD %s", operation, extra=log_data)
+
+    def error(self, message: str) -> None:
+        """Log an error message.
+
+        Args:
+            message: Error message to log
+        """
+        self.logger.error(message, extra={"model": self.model_name})
