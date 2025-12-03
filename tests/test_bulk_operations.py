@@ -3,10 +3,10 @@
 import asyncio
 from typing import Any
 
-import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 from sqlalchemy import Boolean, Column, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -543,3 +543,346 @@ class TestBulkPartialSuccess:
 
             res = client.get("/items")
             assert len(res.json()["data"]) == 1
+
+
+class TestBulkCreateValidator:
+    """Tests for bulk_create_validator parameter"""
+
+    def test_bulk_create_validator_passes(self):
+        """Test bulk create with validator that passes"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_bulk_validator_pass.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            async def bulk_validator(items: list, user: Any, db) -> None:
+                # Validator that always passes
+                pass
+
+            def get_current_user():
+                return {"id": 1, "name": "Test User"}
+
+            class ItemSchema(BaseModel):
+                id: int
+                name: str
+                price: float
+
+                class Config:
+                    from_attributes = True
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                bulk_create_route=True,
+                bulk_create_validator=bulk_validator,
+                current_user_dependency=get_current_user,
+            )
+            app.include_router(router)
+            return app
+
+        app = run_async(_setup())
+        with TestClient(app) as client:
+            items = [
+                {"name": "Item 1", "price": 10.0},
+                {"name": "Item 2", "price": 20.0},
+            ]
+
+            res = client.post("/items/bulk", json=items)
+            assert res.status_code == 201
+
+            data = res.json()
+            assert data["success_count"] == 2
+            assert data["error_count"] == 0
+
+    def test_bulk_create_validator_rejects_batch(self):
+        """Test bulk create with validator that rejects the batch"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_bulk_validator_reject.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            async def bulk_validator(items: list, user: Any, db) -> None:
+                # Reject if total price exceeds 100
+                total_price = sum(item.get("price", 0) for item in items)
+                if total_price > 100:
+                    raise HTTPException(
+                        400, f"Total price {total_price} exceeds limit of 100"
+                    )
+
+            def get_current_user():
+                return {"id": 1, "name": "Test User"}
+
+            class ItemSchema(BaseModel):
+                id: int
+                name: str
+                price: float
+
+                class Config:
+                    from_attributes = True
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                bulk_create_route=True,
+                bulk_create_validator=bulk_validator,
+                current_user_dependency=get_current_user,
+            )
+            app.include_router(router)
+            return app
+
+        app = run_async(_setup())
+        with TestClient(app) as client:
+            # Items with total price > 100 should be rejected
+            items = [
+                {"name": "Item 1", "price": 60.0},
+                {"name": "Item 2", "price": 50.0},  # Total = 110
+            ]
+
+            res = client.post("/items/bulk", json=items)
+            assert res.status_code == 400
+            assert "exceeds limit" in res.json()["detail"]
+
+            # Verify no items were created
+            res = client.get("/items")
+            assert len(res.json()["data"]) == 0
+
+    def test_bulk_create_validator_receives_correct_data(self):
+        """Test that validator receives items as list of dicts"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_bulk_validator_data.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+                category = Column(String, default="default")
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            received_items = []
+
+            async def bulk_validator(items: list, user: Any, db) -> None:
+                # Store received items for verification
+                received_items.extend(items)
+                # Validate each item is a dict with expected keys
+                for item in items:
+                    if not isinstance(item, dict):
+                        raise HTTPException(400, "Item is not a dict")
+                    if "name" not in item or "price" not in item:
+                        raise HTTPException(400, "Missing required fields")
+
+            def get_current_user():
+                return {"id": 1, "name": "Test User"}
+
+            class ItemSchema(BaseModel):
+                id: int
+                name: str
+                price: float
+                category: str = "default"
+
+                class Config:
+                    from_attributes = True
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+                category: str = "default"
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                bulk_create_route=True,
+                bulk_create_validator=bulk_validator,
+                current_user_dependency=get_current_user,
+            )
+            app.include_router(router)
+            return app, received_items
+
+        app, received_items = run_async(_setup())
+        with TestClient(app) as client:
+            items = [
+                {"name": "Item 1", "price": 10.0},
+                {"name": "Item 2", "price": 20.0, "category": "special"},
+            ]
+
+            res = client.post("/items/bulk", json=items)
+            assert res.status_code == 201
+
+            # Verify validator received correct data
+            assert len(received_items) == 2
+            assert received_items[0]["name"] == "Item 1"
+            assert received_items[0]["price"] == 10.0
+            assert received_items[1]["name"] == "Item 2"
+            assert received_items[1]["category"] == "special"
+
+    def test_bulk_create_validator_with_duplicate_names(self):
+        """Test validator rejecting duplicates in batch"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_bulk_validator_duplicates.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            async def bulk_validator(items: list, user: Any, db) -> None:
+                # Check for duplicate names in batch
+                names = [item.get("name") for item in items]
+                if len(names) != len(set(names)):
+                    raise HTTPException(400, "Duplicate names found in batch")
+
+            def get_current_user():
+                return {"id": 1, "name": "Test User"}
+
+            class ItemSchema(BaseModel):
+                id: int
+                name: str
+                price: float
+
+                class Config:
+                    from_attributes = True
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                bulk_create_route=True,
+                bulk_create_validator=bulk_validator,
+                current_user_dependency=get_current_user,
+            )
+            app.include_router(router)
+            return app
+
+        app = run_async(_setup())
+        with TestClient(app) as client:
+            # Batch with duplicate names
+            items = [
+                {"name": "Item 1", "price": 10.0},
+                {"name": "Item 1", "price": 20.0},  # Duplicate name
+            ]
+
+            res = client.post("/items/bulk", json=items)
+            assert res.status_code == 400
+            assert "Duplicate names" in res.json()["detail"]
+
+            # Batch with unique names should pass
+            items = [
+                {"name": "Item 1", "price": 10.0},
+                {"name": "Item 2", "price": 20.0},
+            ]
+
+            res = client.post("/items/bulk", json=items)
+            assert res.status_code == 201
+
+    def test_bulk_create_validator_not_called_without_user(self):
+        """Test that validator is only called when user is present"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_bulk_validator_no_user.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            validator_called = {"count": 0}
+
+            async def bulk_validator(items: list, user: Any, db) -> None:
+                validator_called["count"] += 1
+                # This validator always rejects
+                raise HTTPException(400, "Validator was called")
+
+            class ItemSchema(BaseModel):
+                id: int
+                name: str
+                price: float
+
+                class Config:
+                    from_attributes = True
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+
+            # Router WITHOUT get_current_user - validator should not be called
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                bulk_create_route=True,
+                bulk_create_validator=bulk_validator,
+            )
+            app.include_router(router)
+            return app, validator_called
+
+        app, validator_called = run_async(_setup())
+        with TestClient(app) as client:
+            items = [{"name": "Item 1", "price": 10.0}]
+
+            res = client.post("/items/bulk", json=items)
+            # Without user, validator is not called, so creation succeeds
+            assert res.status_code == 201
+            assert validator_called["count"] == 0

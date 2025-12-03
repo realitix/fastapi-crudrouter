@@ -485,6 +485,34 @@ With `bulk_partial_success=True`, failed items are reported but don't stop the b
 ```
 With `bulk_partial_success=False`, entire batch fails atomically.
 
+### Bulk Create Validator
+Validate the entire batch before processing:
+```python
+async def validate_bulk_create(
+    items: list[dict],
+    user: User,
+    db: AsyncSession
+) -> None:
+    # Check for duplicates within batch
+    names = [item["name"] for item in items]
+    if len(names) != len(set(names)):
+        raise HTTPException(422, "Duplicate names in batch")
+
+    # Check against existing records
+    existing = await db.execute(select(Item.name).where(Item.name.in_(names)))
+    if existing.scalars().all():
+        raise HTTPException(422, "Some items already exist")
+
+router = CRUDRouter(
+    ...,
+    bulk_create_route=True,
+    bulk_create_validator=validate_bulk_create,
+)
+```
+- Runs before any items are created
+- Receives items as list of dicts (after Pydantic validation)
+- Raise `HTTPException` to reject entire batch
+
 ---
 
 ## Overriding Routes
@@ -577,5 +605,6 @@ CRUDRouter(
     bulk_delete_route: Union[bool, List[Depends]] = False,
     bulk_max_items: int = 100,
     bulk_partial_success: bool = True,
+    bulk_create_validator: Optional[Callable] = None,
 )
 ```

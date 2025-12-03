@@ -387,6 +387,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         bulk_delete_route: Union[bool, DEPENDENCIES] = False,
         bulk_max_items: int = 100,
         bulk_partial_success: bool = True,
+        bulk_create_validator: Optional[Callable] = None,
         config: Optional[CRUDConfig] = None,
         **kwargs: Any,
     ) -> None:
@@ -431,6 +432,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             bulk_delete_route,
             bulk_max_items,
             bulk_partial_success,
+            bulk_create_validator,
         )
 
         # 3. Configure schemas
@@ -573,13 +575,14 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         else:
             self.contextual_filter_depends = Depends(lambda: {})
 
-    def _init_bulk_operations(
+    def _init_bulk_operations(  # pylint: disable=too-many-positional-arguments
         self,
         bulk_create_route: Union[bool, DEPENDENCIES],
         bulk_update_route: Union[bool, DEPENDENCIES],
         bulk_delete_route: Union[bool, DEPENDENCIES],
         bulk_max_items: int,
         bulk_partial_success: bool,
+        bulk_create_validator: Optional[Callable],
     ) -> None:
         """Initialize bulk operations configuration"""
         self.bulk_create_route = bulk_create_route
@@ -587,6 +590,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         self.bulk_delete_route = bulk_delete_route
         self.bulk_max_items = bulk_max_items
         self.bulk_partial_success = bulk_partial_success
+        self.bulk_create_validator = bulk_create_validator
 
     def _init_schemas(  # pylint: disable=too-many-positional-arguments
         self,
@@ -1794,6 +1798,11 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
             # Permission check
             self._check_permission(user, "create")
+
+            # Bulk validation (validates entire batch before processing)
+            if self.bulk_create_validator and user:
+                items_as_dicts = [item.model_dump() for item in items]
+                await self.bulk_create_validator(items_as_dicts, user, db)
 
             created_items: List[Any] = []
             errors: List[dict[str, Any]] = []
