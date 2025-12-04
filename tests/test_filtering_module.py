@@ -83,10 +83,52 @@ class TestFilterBuilder:
         assert result is not None
 
     def test_handle_in_operator(self):
-        """Test IN operator"""
+        """Test IN operator with list"""
         builder = FilterBuilder(TestModel)
         query = select(TestModel)
         result = builder._handle_in(query, "age", [18, 25, 30])
+        assert result is not None
+
+    def test_handle_in_operator_single_value(self):
+        """Test IN operator with single value (converted to list)"""
+        builder = FilterBuilder(TestModel)
+        query = select(TestModel)
+        result = builder._handle_in(query, "age", 25)
+        assert result is not None
+
+    def test_handle_in_operator_tuple(self):
+        """Test IN operator with tuple"""
+        builder = FilterBuilder(TestModel)
+        query = select(TestModel)
+        result = builder._handle_in(query, "age", (18, 25, 30))
+        assert result is not None
+
+    def test_handle_in_operator_set(self):
+        """Test IN operator with set"""
+        builder = FilterBuilder(TestModel)
+        query = select(TestModel)
+        result = builder._handle_in(query, "age", {18, 25, 30})
+        assert result is not None
+
+    def test_handle_in_operator_comma_separated_string(self):
+        """Test IN operator with comma-separated string"""
+        builder = FilterBuilder(TestModel)
+        query = select(TestModel)
+        result = builder._handle_in(query, "name", "John,Jane,Bob")
+        assert result is not None
+
+    def test_handle_in_operator_comma_separated_with_spaces(self):
+        """Test IN operator with comma-separated string with spaces"""
+        builder = FilterBuilder(TestModel)
+        query = select(TestModel)
+        result = builder._handle_in(query, "name", "John , Jane , Bob")
+        assert result is not None
+
+    def test_handle_in_operator_string_without_comma(self):
+        """Test IN operator with single string (no comma)"""
+        builder = FilterBuilder(TestModel)
+        query = select(TestModel)
+        result = builder._handle_in(query, "name", "John")
         assert result is not None
 
     def test_apply_operator_filter_gte(self):

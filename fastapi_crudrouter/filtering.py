@@ -137,8 +137,38 @@ class FilterBuilder:
         return query.where(getattr(self.model, field).ilike(f"%{value}%"))
 
     def _handle_in(self, query: Select, field: str, value: Any) -> Select:
-        """Handle IN operator"""
-        return query.where(getattr(self.model, field).in_(value))
+        """Handle IN operator.
+
+        Accepts:
+        - Lists/tuples/sets: used directly
+        - Comma-separated strings: split into a list (e.g., "ACTIVE,PENDING")
+        - Single values: converted to single-item lists
+
+        This allows URL parameters like:
+        - ?status__in=ACTIVE (single value)
+        - ?status__in=ACTIVE,PENDING (comma-separated)
+        - ?status__in=ACTIVE&status__in=PENDING (multiple params, if supported)
+
+        Args:
+            query: SQLAlchemy Select query
+            field: Model field name to filter on
+            value: Filter value(s)
+
+        Returns:
+            Query with IN clause applied
+        """
+        # Handle different input types
+        if isinstance(value, (list, tuple, set)):
+            # Already a collection, use as-is
+            values = list(value)
+        elif isinstance(value, str) and "," in value:
+            # Comma-separated string: split and strip whitespace
+            values = [v.strip() for v in value.split(",") if v.strip()]
+        else:
+            # Single value: wrap in list
+            values = [value]
+
+        return query.where(getattr(self.model, field).in_(values))
 
 
 class OrderByBuilder:

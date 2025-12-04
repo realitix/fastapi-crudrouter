@@ -1,11 +1,13 @@
 """Tests for filter generation and filtering functionality"""
 
 from datetime import date, datetime
+from enum import Enum
 from typing import Annotated, Optional, Union
 
 from pydantic import BaseModel
 
 from fastapi_crudrouter.schema_factory import (
+    _is_enum_type,
     _is_string_like_type,
     extract_python_type,
     generate_fields_with_suffixes,
@@ -108,6 +110,67 @@ class TestExtractPythonType:
 
         # Should extract EmailStr type
         assert result is EmailStr
+
+
+class TestIsEnumType:
+    """Tests unitaires pour _is_enum_type()"""
+
+    def test_base_enum(self):
+        """Test that Enum subclass returns True"""
+
+        class Status(Enum):
+            ACTIVE = "active"
+            INACTIVE = "inactive"
+
+        assert _is_enum_type(Status) is True
+
+    def test_str_enum(self):
+        """Test that str,Enum subclass returns True"""
+
+        class Status(str, Enum):
+            ACTIVE = "active"
+            INACTIVE = "inactive"
+
+        assert _is_enum_type(Status) is True
+
+    def test_int_enum(self):
+        """Test that IntEnum returns True"""
+        from enum import IntEnum
+
+        class Priority(IntEnum):
+            LOW = 1
+            MEDIUM = 2
+            HIGH = 3
+
+        assert _is_enum_type(Priority) is True
+
+    def test_str_type_returns_false(self):
+        """Test that str type returns False"""
+        assert _is_enum_type(str) is False
+
+    def test_int_type_returns_false(self):
+        """Test that int type returns False"""
+        assert _is_enum_type(int) is False
+
+    def test_none_returns_false(self):
+        """Test that None returns False"""
+        assert _is_enum_type(None) is False
+
+    def test_class_not_enum_returns_false(self):
+        """Test that non-Enum class returns False"""
+
+        class NotAnEnum:
+            ACTIVE = "active"
+
+        assert _is_enum_type(NotAnEnum) is False
+
+    def test_enum_instance_returns_false(self):
+        """Test that Enum instance (not type) returns False"""
+
+        class Status(Enum):
+            ACTIVE = "active"
+
+        assert _is_enum_type(Status.ACTIVE) is False
 
 
 class TestIsStringLikeType:
@@ -450,6 +513,105 @@ class TestGenerateFieldsWithSuffixes:
         assert "name__like" in result
         assert "email__like" in result
         assert "website__like" in result
+
+    def test_enum_field_generates_in_suffix(self):
+        """Test that Enum field generates __in suffix"""
+
+        class Status(str, Enum):
+            ACTIVE = "active"
+            INACTIVE = "inactive"
+            PENDING = "pending"
+
+        class TestSchema(BaseModel):
+            status: Status
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "status__in" in result
+        # Should be Optional[str] to accept comma-separated values from URL params
+        assert result["status__in"] == (Optional[str], None)
+
+    def test_optional_enum_field_generates_in_suffix(self):
+        """Test that Optional[Enum] field generates __in suffix"""
+
+        class Priority(str, Enum):
+            LOW = "low"
+            MEDIUM = "medium"
+            HIGH = "high"
+
+        class TestSchema(BaseModel):
+            priority: Optional[Priority] = None
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "priority__in" in result
+        # Type should be Optional[str] to accept comma-separated values from URL params
+        assert result["priority__in"] == (Optional[str], None)
+
+    def test_int_enum_field_generates_in_suffix(self):
+        """Test that IntEnum field generates __in suffix"""
+        from enum import IntEnum
+
+        class Level(IntEnum):
+            LOW = 1
+            MEDIUM = 2
+            HIGH = 3
+
+        class TestSchema(BaseModel):
+            level: Level
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        assert "level__in" in result
+        # Type should be Optional[str] to accept comma-separated values from URL params
+        assert result["level__in"] == (Optional[str], None)
+
+    def test_mixed_types_with_enum_generates_correct_suffixes(self):
+        """Test mixed types including Enum generate correct suffixes"""
+
+        class Status(str, Enum):
+            ACTIVE = "active"
+            INACTIVE = "inactive"
+
+        class TestSchema(BaseModel):
+            name: str
+            created_at: date
+            status: Status
+            count: int
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        # String field should have __like
+        assert "name__like" in result
+        # Date field should have __gte and __lte
+        assert "created_at__gte" in result
+        assert "created_at__lte" in result
+        # Enum field should have __in
+        assert "status__in" in result
+        # Int field should not have automatic suffixes
+        assert "count__like" not in result
+        assert "count__in" not in result
+
+    def test_existing_in_field_not_duplicated(self):
+        """Test that existing __in field is not duplicated"""
+
+        class Status(str, Enum):
+            ACTIVE = "active"
+            INACTIVE = "inactive"
+
+        class TestSchema(BaseModel):
+            status: Status
+            status__in: Optional[list[Status]] = None
+
+        base_fields = TestSchema.model_fields
+        result = generate_fields_with_suffixes(base_fields)
+
+        # Should not add another status__in since it already exists
+        assert "status__in" not in result
 
 
 class TestFilterIntegration:

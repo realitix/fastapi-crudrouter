@@ -2,6 +2,7 @@
 
 from copy import copy
 from datetime import date, datetime
+from enum import Enum
 from types import UnionType
 from typing import Annotated, Any, Optional, Type, Union, get_args, get_origin
 import warnings
@@ -226,11 +227,26 @@ def _is_string_like_type(field_type: Any) -> bool:
     return False
 
 
+def _is_enum_type(field_type: Any) -> bool:
+    """Check if a type is an Enum subclass.
+
+    Args:
+        field_type: Type to check
+
+    Returns:
+        True if field_type is an Enum subclass, False otherwise
+    """
+    try:
+        return isinstance(field_type, type) and issubclass(field_type, Enum)
+    except TypeError:
+        return False
+
+
 def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
-    """Generate filter fields with special operators for date and string types.
+    """Generate filter fields with special operators for date, string, and enum types.
 
     Creates additional filter fields with __gte, __lte operators for date/datetime
-    fields and __like operator for string fields.
+    fields, __like operator for string fields, and __in operator for enum fields.
 
     Args:
         base_fields: Dictionary of field names to FieldInfo from a Pydantic model
@@ -242,24 +258,27 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
         >>> class User(BaseModel):
         ...     name: str
         ...     created_at: date
+        ...     status: StatusEnum
         >>> fields = User.model_fields
         >>> generate_fields_with_suffixes(fields)
         {
             'name__like': (Optional[str], None),
             'created_at__gte': (Optional[date], None),
-            'created_at__lte': (Optional[date], None)
+            'created_at__lte': (Optional[date], None),
+            'status__in': (Optional[list[StatusEnum]], None)
         }
 
     Notes:
         - String fields get __like operator for case-insensitive pattern matching
         - Date/datetime fields get __gte and __lte for range filtering
-        - Existing operator fields (already ending in __like, __gte, __lte) are skipped
+        - Enum fields get __in operator for multi-value filtering
+        - Existing operator fields (already ending in __like, __gte, __lte, __in) are skipped
         - Int/float fields do not get automatic operators
     """
     new_fields = {}
     for field_name, field_info in base_fields.items():
-        # Skip operator fields (ending with __like, __gte, __lte)
-        if field_name.endswith(("__like", "__gte", "__lte")):
+        # Skip operator fields (ending with __like, __gte, __lte, __in)
+        if field_name.endswith(("__like", "__gte", "__lte", "__in")):
             continue
 
         field_type = extract_python_type(field_info.annotation)
@@ -276,6 +295,14 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
             like = f"{field_name}__like"
             if like not in base_fields:
                 new_fields[like] = (Optional[str], None)
+
+        elif _is_enum_type(field_type):
+            # Add __in operator for enum fields (multi-value filtering)
+            # Use str type to accept comma-separated values from URL query params
+            # The FilterBuilder._handle_in method will convert the string to a list
+            in_field = f"{field_name}__in"
+            if in_field not in base_fields:
+                new_fields[in_field] = (Optional[str], None)
 
     return new_fields
 
