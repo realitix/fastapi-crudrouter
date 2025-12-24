@@ -57,7 +57,7 @@ See Also:
     - optional_schema_factory: PATCH schema generation
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from types import UnionType
 from typing import (
     Any,
@@ -1749,7 +1749,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                 # Set timestamp if configured
                 if self.soft_delete_timestamp_field:
-                    setattr(db_model, self.soft_delete_timestamp_field, datetime.utcnow())
+                    setattr(db_model, self.soft_delete_timestamp_field, datetime.now(UTC))
 
                 # Set deleted_by if configured and user is available
                 if self.soft_delete_by_field and user:
@@ -2015,7 +2015,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                             setattr(
                                 db_model,
                                 self.soft_delete_timestamp_field,
-                                datetime.utcnow(),
+                                datetime.now(UTC),
                             )
                         if self.soft_delete_by_field and user:
                             user_id = getattr(user, "id", None)

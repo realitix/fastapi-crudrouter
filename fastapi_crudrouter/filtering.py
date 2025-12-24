@@ -4,7 +4,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
 
 from pydantic import BaseModel
-from sqlalchemy import Select, desc
+from sqlalchemy import Select, and_, desc, or_
 from sqlalchemy.ext.declarative import DeclarativeMeta
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -88,6 +88,18 @@ class FilterBuilder:
             if value is None:
                 continue
 
+            # Handle logical operators __or__ and __and__
+            if key == "__or__" and isinstance(value, list):
+                conditions = self._build_conditions_from_list(value)
+                if conditions:
+                    query = query.where(or_(*conditions))
+                continue
+            if key == "__and__" and isinstance(value, list):
+                conditions = self._build_conditions_from_list(value)
+                if conditions:
+                    query = query.where(and_(*conditions))
+                continue
+
             # Check for metadata (custom filter function or join)
             metadata = None
             if filter_metadata_getter:
@@ -107,6 +119,28 @@ class FilterBuilder:
                 query = query.where(getattr(self.model, key) == value)
 
         return query
+
+    def _build_conditions_from_list(self, conditions_list: list) -> list:
+        """Build SQLAlchemy conditions from a list of filter dicts.
+
+        Args:
+            conditions_list: List of filter dicts, e.g., [{"school_id": None}, {"school_id": 1}]
+
+        Returns:
+            List of SQLAlchemy comparison expressions
+        """
+        conditions = []
+        for cond_dict in conditions_list:
+            if not isinstance(cond_dict, dict):
+                continue
+            for field, value in cond_dict.items():
+                if hasattr(self.model, field):
+                    col = getattr(self.model, field)
+                    if value is None:
+                        conditions.append(col.is_(None))
+                    else:
+                        conditions.append(col == value)
+        return conditions
 
     def _apply_operator_filter(self, query: Select, key: str, value: Any) -> Select:
         """Apply filter with operator (__gte, __lte, etc.)"""
