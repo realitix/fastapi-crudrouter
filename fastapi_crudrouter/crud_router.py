@@ -57,7 +57,7 @@ See Also:
     - optional_schema_factory: PATCH schema generation
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from types import UnionType
 from typing import (
     Any,
@@ -339,7 +339,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         - Both PUT and PATCH respect Pydantic validators
     """
 
-    def __init__(  # pylint: disable=too-many-positional-arguments,super-init-not-called
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments,super-init-not-called
         self,
         schema: Type[PYDANTIC_SCHEMA],
         db_model: ModelType,
@@ -619,6 +619,10 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             )
         )
         self.get_all_schema = get_all_schema if get_all_schema else schema
+
+        # Extract computed column names from get_all_schema for sorting support
+        _, _, _, custom_func_fields = self.get_fields(self.get_all_schema)
+        self._order_builder.set_computed_columns(set(custom_func_fields.keys()))
 
     def _init_filtering(self, filter_schema: Optional[Type[PYDANTIC_SCHEMA]]) -> None:
         """Initialize filtering system"""
@@ -1224,7 +1228,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     def _get_all(self) -> Callable[..., Coroutine[Any, Any, GetAllResult]]:
         """Get all items with pagination and filtering"""
 
-        async def route(
+        async def route(  # pylint: disable=too-many-positional-arguments
             db: AsyncSession = Depends(self.db_func),
             pagination: PAGINATION = self.pagination,
             filters: self.filter_schema = self.filter_depends,  # type: ignore[name-defined]
@@ -1528,9 +1532,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         await self.after_create(db_model, user, db)
                     except Exception as hook_error:  # pylint: disable=broad-except
                         # Log hook errors but don't fail the main operation
-                        self._logger.error(
-                            f"after_create hook error: {hook_error}"
-                        )
+                        self._logger.error(f"after_create hook error: {hook_error}")
 
                 return await self._get_one()(
                     item_id=getattr(db_model, self._pk), db=db, user=user
@@ -1598,9 +1600,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         await self.after_update(db_model, user, db)
                     except Exception as hook_error:  # pylint: disable=broad-except
                         # Log hook errors but don't fail the main operation
-                        self._logger.error(
-                            f"after_update hook error: {hook_error}"
-                        )
+                        self._logger.error(f"after_update hook error: {hook_error}")
 
                 return await self._get_one()(
                     item_id=getattr(db_model, self._pk), db=db, user=user
@@ -1677,9 +1677,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         await self.after_update(db_model, user, db)
                     except Exception as hook_error:  # pylint: disable=broad-except
                         # Log hook errors but don't fail the main operation
-                        self._logger.error(
-                            f"after_update hook error: {hook_error}"
-                        )
+                        self._logger.error(f"after_update hook error: {hook_error}")
 
                 return await self._get_one()(
                     item_id=getattr(db_model, self._pk), db=db, user=user
@@ -1749,7 +1747,11 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                 # Set timestamp if configured
                 if self.soft_delete_timestamp_field:
-                    setattr(db_model, self.soft_delete_timestamp_field, datetime.now(UTC))
+                    setattr(
+                        db_model,
+                        self.soft_delete_timestamp_field,
+                        datetime.now(timezone.utc),
+                    )
 
                 # Set deleted_by if configured and user is available
                 if self.soft_delete_by_field and user:
@@ -1769,9 +1771,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     await self.after_delete(item_id, user, db)
                 except Exception as hook_error:  # pylint: disable=broad-except
                     # Log hook errors but don't fail the main operation
-                    self._logger.error(
-                        f"after_delete hook error: {hook_error}"
-                    )
+                    self._logger.error(f"after_delete hook error: {hook_error}")
 
         return route
 
@@ -1807,7 +1807,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             created_items: List[Any] = []
             errors: List[dict[str, Any]] = []
 
-            for idx, item in enumerate(items):
+            for idx, item in enumerate(items):  # pylint: disable=too-many-nested-blocks
                 try:
                     # Apply create_defaults
                     if self.create_defaults and user:
@@ -1830,11 +1830,13 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     db.add(db_model)
                     await db.flush()  # Get the ID without committing
 
-                    created_items.append({
-                        "index": idx,
-                        self._pk: getattr(db_model, self._pk),
-                        "data": item.model_dump(),
-                    })
+                    created_items.append(
+                        {
+                            "index": idx,
+                            self._pk: getattr(db_model, self._pk),
+                            "data": item.model_dump(),
+                        }
+                    )
 
                     # Call after_create hook (ignore errors to not fail bulk operation)
                     if self.after_create:
@@ -1844,14 +1846,20 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                             pass
 
                 except Exception as e:  # pylint: disable=broad-except
-                    errors.append({
-                        "index": idx,
-                        "error": str(e),
-                        "data": item.model_dump() if hasattr(item, "model_dump") else {},
-                    })
+                    errors.append(
+                        {
+                            "index": idx,
+                            "error": str(e),
+                            "data": item.model_dump()
+                            if hasattr(item, "model_dump")
+                            else {},
+                        }
+                    )
                     if not self.bulk_partial_success:
                         await db.rollback()
-                        raise HTTPException(400, f"Bulk create failed at index {idx}: {e}") from e
+                        raise HTTPException(
+                            400, f"Bulk create failed at index {idx}: {e}"
+                        ) from e
 
             # Commit all successful creations
             if created_items:
@@ -1905,15 +1913,17 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                     # Get the item from database
                     db_model = await db.get(
-                        self.db_model, item_id  # type: ignore[arg-type]
+                        self.db_model,  # type: ignore[arg-type]
+                        item_id,
                     )
                     if not db_model:
                         raise ValueError(f"Item with {self._pk}={item_id} not found")
 
                     # Update fields (exclude pk)
                     update_data = {
-                        k: v for k, v in item_data.items()
-                        if k != self._pk and k != "id" and hasattr(db_model, k)
+                        k: v
+                        for k, v in item_data.items()
+                        if k not in {self._pk, "id"} and hasattr(db_model, k)
                     }
 
                     for key, value in update_data.items():
@@ -1921,11 +1931,13 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                     await db.flush()
 
-                    updated_items.append({
-                        "index": idx,
-                        self._pk: item_id,
-                        "updated_fields": list(update_data.keys()),
-                    })
+                    updated_items.append(
+                        {
+                            "index": idx,
+                            self._pk: item_id,
+                            "updated_fields": list(update_data.keys()),
+                        }
+                    )
 
                     # Call after_update hook (ignore errors to not fail bulk operation)
                     if self.after_update:
@@ -1935,14 +1947,18 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                             pass
 
                 except Exception as e:  # pylint: disable=broad-except
-                    errors.append({
-                        "index": idx,
-                        "error": str(e),
-                        self._pk: item_data.get(self._pk) or item_data.get("id"),
-                    })
+                    errors.append(
+                        {
+                            "index": idx,
+                            "error": str(e),
+                            self._pk: item_data.get(self._pk) or item_data.get("id"),
+                        }
+                    )
                     if not self.bulk_partial_success:
                         await db.rollback()
-                        raise HTTPException(400, f"Bulk update failed at index {idx}: {e}") from e
+                        raise HTTPException(
+                            400, f"Bulk update failed at index {idx}: {e}"
+                        ) from e
 
             # Commit all successful updates
             if updated_items:
@@ -1991,7 +2007,8 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                     # Get the item
                     db_model = await db.get(
-                        self.db_model, item_id  # type: ignore[arg-type]
+                        self.db_model,  # type: ignore[arg-type]
+                        item_id,
                     )
                     if not db_model:
                         raise ValueError(f"Item with {self._pk}={item_id} not found")
@@ -2010,12 +2027,14 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
                     # Perform delete (soft or hard)
                     if self.soft_delete:
-                        setattr(db_model, self.soft_delete_field, self.soft_delete_value)
+                        setattr(
+                            db_model, self.soft_delete_field, self.soft_delete_value
+                        )
                         if self.soft_delete_timestamp_field:
                             setattr(
                                 db_model,
                                 self.soft_delete_timestamp_field,
-                                datetime.now(UTC),
+                                datetime.now(timezone.utc),
                             )
                         if self.soft_delete_by_field and user:
                             user_id = getattr(user, "id", None)
@@ -2035,14 +2054,18 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                             pass
 
                 except Exception as e:  # pylint: disable=broad-except
-                    errors.append({
-                        "index": idx,
-                        self._pk: item_id,
-                        "error": str(e),
-                    })
+                    errors.append(
+                        {
+                            "index": idx,
+                            self._pk: item_id,
+                            "error": str(e),
+                        }
+                    )
                     if not self.bulk_partial_success:
                         await db.rollback()
-                        raise HTTPException(400, f"Bulk delete failed at index {idx}: {e}") from e
+                        raise HTTPException(
+                            400, f"Bulk delete failed at index {idx}: {e}"
+                        ) from e
 
             # Commit all successful deletes
             if deleted_ids:

@@ -7,10 +7,10 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -263,7 +263,7 @@ class TestSoftDeleteNullableField:
             res = client.get("/items")
             assert len(res.json()["data"]) == 1
 
-            # Delete (soft)
+            # Perform soft delete
             res = client.delete(f"/items/{item_id}")
             assert res.status_code == 204
 

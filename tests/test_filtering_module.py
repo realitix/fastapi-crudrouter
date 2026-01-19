@@ -43,7 +43,7 @@ class TestFilterOperator:
         assert FilterOperator.IN == "in"
 
 
-class TestFilterBuilder:
+class TestFilterBuilder:  # pylint: disable=too-many-public-methods
     """Test FilterBuilder class"""
 
     def test_init(self):

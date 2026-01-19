@@ -3,10 +3,10 @@
 import asyncio
 from typing import Optional
 
-import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -214,8 +214,7 @@ class TestIntegrationAllFeatures:
         app, hook_tracker = full_feature_app
         with TestClient(app) as client:
             items = [
-                {"name": f"Bulk Item {i}", "price": float(i * 10)}
-                for i in range(3)
+                {"name": f"Bulk Item {i}", "price": float(i * 10)} for i in range(3)
             ]
             res = client.post("/items/bulk", json=items)
             assert res.status_code == 201

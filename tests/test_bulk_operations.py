@@ -470,7 +470,7 @@ class TestBulkDelete:
             res1 = client.post("/items", json={"name": "Normal", "price": 10.0})
             res2 = client.post(
                 "/items",
-                json={"name": "Protected", "price": 20.0, "is_protected": True}
+                json={"name": "Protected", "price": 20.0, "is_protected": True},
             )
             id1 = res1.json()["id"]
             id2 = res2.json()["id"]

@@ -3,10 +3,10 @@
 import asyncio
 from typing import Any, Optional
 
-import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 from sqlalchemy import Boolean, Column, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base

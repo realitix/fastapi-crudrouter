@@ -2,10 +2,10 @@
 
 import asyncio
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 from sqlalchemy import Column, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -195,7 +195,7 @@ class TestHookErrorHandling:
                 await conn.run_sync(Base.metadata.create_all)
 
             async def failing_hook(model, user, db):
-                raise Exception("Hook failed!")
+                raise RuntimeError("Hook failed!")
 
             class ItemSchema(BaseModel):
                 id: int

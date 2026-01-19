@@ -4,7 +4,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
 
 from pydantic import BaseModel
-from sqlalchemy import Select, and_, desc, or_
+from sqlalchemy import Select, and_, desc, literal_column, or_
 from sqlalchemy.ext.declarative import DeclarativeMeta
 from sqlalchemy.orm import InstrumentedAttribute
 
@@ -225,6 +225,18 @@ class OrderByBuilder:
         self.model = model
         self.default_pk = default_pk
         self.default_order_by = default_order_by
+        self._computed_columns: set[str] = set()
+
+    def set_computed_columns(self, columns: set[str]) -> None:
+        """Set the list of computed column names that can be sorted on.
+
+        Computed columns are columns added to the query via add_columns()
+        in custom functions (e.g., Annotated[date, join_function]).
+
+        Args:
+            columns: Set of computed column names
+        """
+        self._computed_columns = columns
 
     def get_order_by(self, order_by_param: Optional[str]) -> Any:
         """Get ORDER BY clause from parameter.
@@ -272,7 +284,16 @@ class OrderByBuilder:
         if field_name.startswith("_"):
             return desc(getattr(self.model, self.default_pk))
 
-        # Validate field exists
+        # Validate direction
+        if direction not in ("ASC", "DESC"):
+            direction = "ASC"
+
+        # Check if it's a computed column (added via add_columns in custom functions)
+        if field_name in self._computed_columns:
+            computed_col: Any = literal_column(field_name)
+            return desc(computed_col) if direction == "DESC" else computed_col
+
+        # Validate field exists on the model
         if not hasattr(self.model, field_name):
             return desc(getattr(self.model, self.default_pk))
 
@@ -281,9 +302,5 @@ class OrderByBuilder:
         # Verify it's a column
         if not isinstance(field_attr, InstrumentedAttribute):
             return desc(getattr(self.model, self.default_pk))
-
-        # Validate direction
-        if direction not in ("ASC", "DESC"):
-            direction = "ASC"
 
         return desc(field_attr) if direction == "DESC" else field_attr

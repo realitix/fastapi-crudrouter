@@ -1,12 +1,13 @@
 """Integration tests for IN filter with Enum fields"""
 
+import asyncio
 from enum import Enum
 from typing import Optional
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+import pytest
 from sqlalchemy import Column, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -56,8 +57,6 @@ ItemFilterExtended = create_filter(ItemFilter)
 @pytest.fixture(scope="module")
 def in_filter_client():
     """Create a test client with an Item model that has an Enum field"""
-    import asyncio
-
     db_uri = "sqlite+aiosqlite:///./test_in_filter.db"
     sync_uri = db_uri.replace("+aiosqlite", "")
 

@@ -1,7 +1,7 @@
 """Tests for filter generation and filtering functionality"""
 
 from datetime import date, datetime
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Annotated, Optional, Union
 
 from pydantic import BaseModel
@@ -135,7 +135,6 @@ class TestIsEnumType:
 
     def test_int_enum(self):
         """Test that IntEnum returns True"""
-        from enum import IntEnum
 
         class Priority(IntEnum):
             LOW = 1
@@ -274,7 +273,7 @@ class TestIsStringLikeType:
         assert _is_string_like_type(CustomUrl) is True
 
 
-class TestGenerateFieldsWithSuffixes:
+class TestGenerateFieldsWithSuffixes:  # pylint: disable=too-many-public-methods
     """Tests unitaires pour generate_fields_with_suffixes()"""
 
     def test_str_field_generates_like_suffix(self):
@@ -552,7 +551,6 @@ class TestGenerateFieldsWithSuffixes:
 
     def test_int_enum_field_generates_in_suffix(self):
         """Test that IntEnum field generates __in suffix"""
-        from enum import IntEnum
 
         class Level(IntEnum):
             LOW = 1
