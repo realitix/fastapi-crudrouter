@@ -1049,13 +1049,15 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 attribute = annotation.metadata[0]
                 # Pydantic v2 only
                 field_annotation = annotation.annotation
-                if get_origin(field_annotation) is list:
+                # Check callable first: custom_func_fields take priority
+                # regardless of field type (including list fields)
+                if callable(attribute) and not isinstance(attribute, (list, tuple)):
+                    custom_func_fields[field] = attribute
+                elif get_origin(field_annotation) is list:
                     list_args = get_args(field_annotation)
                     read_cls = list_args[0]
                     foreign_key = attribute[1]
                     join_list_fields[field] = (attribute[0], foreign_key, read_cls)
-                elif callable(attribute):
-                    custom_func_fields[field] = attribute
                 elif hasattr(attribute, "class_"):
                     # Only treat as join field if it's a SQLAlchemy relationship (has .class_ attribute)
                     join_fields[field] = (attribute, type_can_be_none(field_annotation))
@@ -1360,7 +1362,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
     ) -> list:
         """Execute query with pagination"""
         result = await db.execute(query.limit(limit).offset(skip))
-        return result.all()
+        return list(result.all())
 
     async def _count_total(self, db: AsyncSession, query: Any) -> int:
         """Count total records for query"""

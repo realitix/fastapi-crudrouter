@@ -7,7 +7,7 @@ from tests.implementations import implementations
 def router(request):
     impl, dsn = request.param
 
-    app, router, settings = impl(db_uri=dsn)
+    _app, router, settings = impl(db_uri=dsn)
     kwargs = {**settings[0], **{"prefix": None}}
     router = router(**kwargs)
 

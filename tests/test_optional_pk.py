@@ -79,7 +79,7 @@ class TestPathConverterWithOptionalPK:
     def test_optional_int_pk_generates_int_converter(self):
         """Test that optional int PK generates :int path converter."""
         from sqlalchemy import Column, Integer, String
-        from sqlalchemy.ext.declarative import declarative_base
+        from sqlalchemy.orm import declarative_base
 
         from fastapi_crudrouter import CRUDRouter
 
@@ -117,7 +117,7 @@ class TestPathConverterWithOptionalPK:
         """Test that optional UUID PK generates :uuid path converter."""
         from sqlalchemy import Column, String
         from sqlalchemy.dialects.postgresql import UUID as PGUUID
-        from sqlalchemy.ext.declarative import declarative_base
+        from sqlalchemy.orm import declarative_base
 
         from fastapi_crudrouter import CRUDRouter
 

@@ -13,14 +13,16 @@ PATH_TAGS = {
 
 
 class TestOpenAPISpec:
-    def test_schema_exists(self, client):
+    def _get_schema(self, client):
         res = client.get("/openapi.json")
         assert res.status_code == 200
-
         return res
 
+    def test_schema_exists(self, client):
+        self._get_schema(client)
+
     def test_schema_tags(self, client):
-        schema = self.test_schema_exists(client).json()
+        schema = self._get_schema(client).json()
         paths = schema["paths"]
 
         assert len(paths) == len(PATH_TAGS)
@@ -35,7 +37,7 @@ class TestOpenAPISpec:
 
     @mark.parametrize("path", PATHS)
     def test_response_types(self, client, path):
-        schema = self.test_schema_exists(client).json()
+        schema = self._get_schema(client).json()
         paths = schema["paths"]
 
         # GET returns 200

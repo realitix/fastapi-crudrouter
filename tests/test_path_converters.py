@@ -9,7 +9,7 @@ and provide proper type validation at the routing level.
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import pytest
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -29,11 +29,10 @@ class Item(Base):
 
 
 class ItemSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
-
-    class Config:
-        from_attributes = True
 
 
 class ItemCreate(BaseModel):
@@ -49,69 +48,66 @@ def test_app_with_int_pk():
     """Create test app with int primary key and custom /deleted route."""
     import asyncio
 
-    # Get or create event loop (same pattern as implementations/sqlalchemy_.py)
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Create async engine and tables synchronously
+        async def _setup():
+            engine = create_async_engine(
+                "sqlite+aiosqlite:///:memory:",
+                poolclass=StaticPool,
+                connect_args={"check_same_thread": False},
+            )
 
-    # Create async engine and tables synchronously
-    async def _setup():
-        engine = create_async_engine(
-            "sqlite+aiosqlite:///:memory:",
-            poolclass=StaticPool,
-            connect_args={"check_same_thread": False},
+            # Create tables async
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            return engine
+
+        engine = loop.run_until_complete(_setup())
+
+        AsyncSessionLocal = async_sessionmaker(
+            autocommit=False, autoflush=False, bind=engine
         )
 
-        # Create tables async
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        async def get_db():
+            async with AsyncSessionLocal() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
 
-        return engine
+        app = FastAPI()
 
-    engine = loop.run_until_complete(_setup())
+        # Add CRUDRouter (will use /{item_id:int})
+        router = CRUDRouter(
+            schema=ItemSchema,
+            create_schema=ItemCreate,
+            update_schema=ItemUpdate,
+            db_model=Item,
+            db=get_db,
+            prefix="/items",
+        )
 
-    AsyncSessionLocal = async_sessionmaker(
-        autocommit=False, autoflush=False, bind=engine
-    )
+        # Add custom /deleted route AFTER CRUDRouter
+        # This should NOT conflict thanks to /{item_id:int}
+        @router.get("/deleted")
+        def list_deleted():
+            return {"message": "deleted items", "items": []}
 
-    async def get_db():
-        async with AsyncSessionLocal() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
+        app.include_router(router)
 
-    app = FastAPI()
+        yield app
 
-    # Add CRUDRouter (will use /{item_id:int})
-    router = CRUDRouter(
-        schema=ItemSchema,
-        create_schema=ItemCreate,
-        update_schema=ItemUpdate,
-        db_model=Item,
-        db=get_db,
-        prefix="/items",
-    )
+        # Cleanup
+        async def _cleanup():
+            await engine.dispose()
 
-    # Add custom /deleted route AFTER CRUDRouter
-    # This should NOT conflict thanks to /{item_id:int}
-    @router.get("/deleted")
-    def list_deleted():
-        return {"message": "deleted items", "items": []}
-
-    app.include_router(router)
-
-    yield app
-
-    # Cleanup
-    async def _cleanup():
-        await engine.dispose()
-
-    loop.run_until_complete(_cleanup())
+        loop.run_until_complete(_cleanup())
+    finally:
+        loop.close()
 
 
 class TestPathConvertersIntPK:

@@ -205,6 +205,10 @@ markers = [
     "integration: marks tests as integration tests",
 ]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+    "ignore:There is no current event loop:DeprecationWarning:aiosqlite",
+]
 
 # Coverage configuration (if you want to add it later)
 [tool.coverage.run]

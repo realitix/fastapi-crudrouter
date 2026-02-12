@@ -3,20 +3,20 @@
 from pydantic import BaseModel
 import pytest
 from sqlalchemy import Column, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 from fastapi_crudrouter import CRUDRouter
 
 Base = declarative_base()
 
 
-class TestModel(Base):
+class SampleModel(Base):
     __tablename__ = "test"
     id = Column(Integer, primary_key=True)
     name = Column(String)
 
 
-class TestSchema(BaseModel):
+class SampleSchema(BaseModel):
     id: int
     name: str
 
@@ -31,8 +31,8 @@ class TestTypedOverrides:
             pass
 
         router = CRUDRouter(
-            schema=TestSchema,
-            db_model=TestModel,
+            schema=SampleSchema,
+            db_model=SampleModel,
             db=get_db,
             prefix="/items",
             create_route=False,
@@ -80,8 +80,8 @@ class TestTypedOverrides:
             pass
 
         router = CRUDRouter(
-            schema=TestSchema,
-            db_model=TestModel,
+            schema=SampleSchema,
+            db_model=SampleModel,
             db=get_db,
             prefix="/items",
             create_route=False,
@@ -128,8 +128,8 @@ class TestTypedOverrides:
 
         # Test with untyped override
         router1 = CRUDRouter(
-            schema=TestSchema,
-            db_model=TestModel,
+            schema=SampleSchema,
+            db_model=SampleModel,
             db=get_db,
             prefix="/items",
             create_route=False,
@@ -152,8 +152,8 @@ class TestTypedOverrides:
 
         # Test with typed override
         router2 = CRUDRouter(
-            schema=TestSchema,
-            db_model=TestModel,
+            schema=SampleSchema,
+            db_model=SampleModel,
             db=get_db,
             prefix="/items",
             create_route=False,

@@ -21,7 +21,7 @@ def insert_items(
 ):
     model = model or basic_potato
     for i in range(count):
-        test_router.test_post(
+        test_router.check_post(
             client,
             url=url,
             model=model,
@@ -32,7 +32,7 @@ def insert_items(
 @pytest.fixture(scope="class")
 def insert_carrots(client):
     for i in range(INSERT_COUNT):
-        test_router.test_post(client, CarrotUrl, basic_carrot, expected_length=i + 1)
+        test_router.check_post(client, CarrotUrl, basic_carrot, expected_length=i + 1)
 
 
 @pytest.fixture(scope="class")
@@ -58,7 +58,7 @@ class TestPagination:
     @pytest.mark.parametrize("offset", [0, 1, 5, 10, 20, 40])
     @pytest.mark.parametrize("limit", [1, 5, 10])
     def test_pagination(self, client, limit, offset):
-        test_router.test_get(
+        test_router.check_get(
             client=client,
             url=PotatoUrl,
             params={"limit": limit, "skip": offset},
@@ -76,14 +76,14 @@ class TestPagination:
         assert res.status_code == 422
 
     def test_pagination_disabled(self, client):
-        test_router.test_get(client, CarrotUrl, expected_length=INSERT_COUNT)
+        test_router.check_get(client, CarrotUrl, expected_length=INSERT_COUNT)
 
     @pytest.mark.parametrize("limit", [2, 5, 10])
     def test_paging(self, client, limit):
         ids = set()
         skip = 0
         while skip < INSERT_COUNT:
-            data = test_router.test_get(
+            data = test_router.check_get(
                 client,
                 PotatoUrl,
                 params={"limit": limit, "skip": skip},

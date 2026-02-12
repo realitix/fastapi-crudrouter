@@ -15,7 +15,7 @@ def extract_data_from_response(response_data):
     return response_data
 
 
-def test_get(
+def check_get(
     client, url: str = URL, params: Optional[dict] = None, expected_length: int = 0
 ):
     res = client.get(url, params=params)
@@ -29,7 +29,7 @@ def test_get(
     return data
 
 
-def test_post(
+def check_post(
     client, url: str = URL, model: Optional[Dict] = None, expected_length: int = 1
 ) -> dict:
     model = model or basic_potato
@@ -41,6 +41,18 @@ def test_post(
     assert len(data) == expected_length
 
     return res.json()
+
+
+def test_get(
+    client, url: str = URL, params: Optional[dict] = None, expected_length: int = 0
+):
+    check_get(client, url, params, expected_length)
+
+
+def test_post(
+    client, url: str = URL, model: Optional[Dict] = None, expected_length: int = 1
+):
+    check_post(client, url, model, expected_length)
 
 
 def test_get_one(
@@ -73,14 +85,14 @@ def test_update(
     schemas don't have optional fields, we can't test that scenario here,
     but the implementation correctly handles it.
     """
-    test_get(client, url, expected_length=0)
+    check_get(client, url, expected_length=0)
 
     model = model or basic_potato
     res = client.post(url, json=model)
     data = res.json()
     assert res.status_code == 201
 
-    test_get(client, url, expected_length=1)
+    check_get(client, url, expected_length=1)
 
     tuber = dict(model.items())
     tuber["color"] = "yellow"
@@ -100,14 +112,14 @@ def test_patch(
     client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
 ):
     """Test PATCH with partial payload - only provided fields should be updated"""
-    test_get(client, url, expected_length=0)
+    check_get(client, url, expected_length=0)
 
     model = model or basic_potato
     res = client.post(url, json=model)
     data = res.json()
     assert res.status_code == 201
 
-    test_get(client, url, expected_length=1)
+    check_get(client, url, expected_length=1)
 
     # PATCH with only one field
     partial_update = {"color": "yellow"}
@@ -147,7 +159,7 @@ def test_patch_null_validation(
     client, url: str = URL, model: Optional[Dict] = None, id_key: str = "id"
 ):
     """Test that PATCH rejects explicit null for non-nullable fields but allows omission"""
-    test_get(client, url, expected_length=0)
+    check_get(client, url, expected_length=0)
 
     model = model or basic_potato
     res = client.post(url, json=model)
@@ -265,9 +277,9 @@ def test_patch_schema_derives_from_update_schema():
     from update_schema (e.g., sensitive fields like is_admin, created_at, etc.).
     """
     # pylint: disable=import-outside-toplevel
-    from pydantic import BaseModel  # noqa: PLC0415
+    from pydantic import BaseModel, ConfigDict  # noqa: PLC0415
     from sqlalchemy import Boolean, Column, Integer, String  # noqa: PLC0415
-    from sqlalchemy.ext.declarative import declarative_base  # noqa: PLC0415
+    from sqlalchemy.orm import declarative_base  # noqa: PLC0415
 
     from fastapi_crudrouter import CRUDRouter  # noqa: PLC0415
 
@@ -283,13 +295,12 @@ def test_patch_schema_derives_from_update_schema():
 
     # Full read schema (includes sensitive field)
     class UserRead(BaseModel):
+        model_config = ConfigDict(from_attributes=True)
+
         id: int
         name: str
         email: str
         is_admin: bool  # Visible in read
-
-        class Config:
-            from_attributes = True
 
     # Restricted update schema (excludes sensitive field)
     class UserUpdate(BaseModel):
@@ -357,11 +368,10 @@ def test_patch_preserves_validators():
             return v  # Must return the value
 
         @model_validator(mode="after")
-        @classmethod
-        def check_not_blacklisted(cls, model):
-            if model.name and model.name.lower() in ["admin", "root", "system"]:
+        def check_not_blacklisted(self):
+            if self.name and self.name.lower() in ["admin", "root", "system"]:
                 raise ValueError("Name is blacklisted")
-            return model
+            return self
 
     from fastapi_crudrouter.crud_router import (  # noqa: PLC0415
         optional_schema_factory,
@@ -477,9 +487,9 @@ def test_patch_null_check_uses_update_schema():
     by exploiting differences between read and write schemas.
     """
     # pylint: disable=import-outside-toplevel
-    from pydantic import BaseModel  # noqa: PLC0415
+    from pydantic import BaseModel, ConfigDict  # noqa: PLC0415
     from sqlalchemy import Column, Integer, String  # noqa: PLC0415
-    from sqlalchemy.ext.declarative import declarative_base  # noqa: PLC0415
+    from sqlalchemy.orm import declarative_base  # noqa: PLC0415
 
     from fastapi_crudrouter import CRUDRouter  # noqa: PLC0415
 
@@ -496,11 +506,10 @@ def test_patch_null_check_uses_update_schema():
 
     # Read schema: password field is NOT included (hidden from API responses)
     class UserRead(BaseModel):
+        model_config = ConfigDict(from_attributes=True)
+
         id: int
         name: str
-
-        class Config:
-            from_attributes = True
 
     # Update schema: password is required (non-optional)
     class UserUpdate(BaseModel):
@@ -548,9 +557,9 @@ def test_patch_null_check_required_field_different_optionality():
     The null guard must respect the update schema's requirement.
     """
     # pylint: disable=import-outside-toplevel
-    from pydantic import BaseModel  # noqa: PLC0415
+    from pydantic import BaseModel, ConfigDict  # noqa: PLC0415
     from sqlalchemy import Column, Integer, String  # noqa: PLC0415
-    from sqlalchemy.ext.declarative import declarative_base  # noqa: PLC0415
+    from sqlalchemy.orm import declarative_base  # noqa: PLC0415
 
     from fastapi_crudrouter import CRUDRouter  # noqa: PLC0415
 
@@ -564,12 +573,11 @@ def test_patch_null_check_required_field_different_optionality():
 
     # Read schema: email is Optional (may be hidden from some users)
     class AccountRead(BaseModel):
+        model_config = ConfigDict(from_attributes=True)
+
         id: int
         name: str
         email: str | None  # Optional in read
-
-        class Config:
-            from_attributes = True
 
     # Update schema: email is required (must not be null when updating)
     class AccountUpdate(BaseModel):

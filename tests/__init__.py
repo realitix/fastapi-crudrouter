@@ -1,5 +1,5 @@
 # pylint: disable=useless-import-alias
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .conf import config as config
 
@@ -10,8 +10,7 @@ CUSTOM_TAGS = ["Tag1", "Tag2"]
 class ORMModel(BaseModel):
     id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PotatoCreate(BaseModel):
@@ -28,8 +27,7 @@ class Potato(PotatoCreate, ORMModel):
 class CustomPotato(PotatoCreate):
     potato_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CarrotCreate(BaseModel):
@@ -49,5 +47,4 @@ class PotatoType(BaseModel):
     name: str
     origin: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

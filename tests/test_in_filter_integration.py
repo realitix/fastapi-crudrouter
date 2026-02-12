@@ -6,11 +6,11 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import pytest
 from sqlalchemy import Column, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy_utils import create_database, database_exists, drop_database
 
 from fastapi_crudrouter import CRUDRouter
@@ -37,10 +37,9 @@ class ItemBase(BaseModel):
 class Item(ItemBase):
     """Item schema with ID"""
 
-    id: int
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        orm_mode = True
+    id: int
 
 
 class ItemFilter(BaseModel):
@@ -94,13 +93,11 @@ def in_filter_client():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    loop.run_until_complete(create_tables())
+        loop.run_until_complete(create_tables())
+    finally:
+        loop.close()
 
     app.include_router(
         CRUDRouter(

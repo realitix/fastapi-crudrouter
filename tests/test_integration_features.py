@@ -5,11 +5,11 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import pytest
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy_utils import create_database, database_exists, drop_database
 
 from fastapi_crudrouter import CRUDRouter
@@ -45,13 +45,11 @@ async def create_test_app_base(db_uri: str):
 
 
 def run_async(coro):
-    """Run async coroutine synchronously"""
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 class MockUser:
@@ -114,6 +112,8 @@ class TestIntegrationAllFeatures:
                 return {"school_id": user.school_id, "created_by_id": user.id}
 
             class ItemSchema(BaseModel):
+                model_config = ConfigDict(from_attributes=True)
+
                 id: int
                 name: str
                 price: float
@@ -123,9 +123,6 @@ class TestIntegrationAllFeatures:
                 created_by_id: Optional[int] = None
                 is_deleted: bool = False
                 is_locked: bool = False
-
-                class Config:
-                    from_attributes = True
 
             class ItemCreateSchema(BaseModel):
                 name: str

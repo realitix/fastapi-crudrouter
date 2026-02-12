@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from sqlalchemy import Column, Float, Integer, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy_utils import create_database, database_exists, drop_database
 
 from fastapi_crudrouter import CRUDRouter
@@ -189,46 +189,38 @@ async def sqlalchemy_async_implementation_integrity_errors():
 def sqlalchemy_implementation(db_uri: str):
     import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(sqlalchemy_async_implementation(db_uri))
+        return loop.run_until_complete(sqlalchemy_async_implementation(db_uri))
+    finally:
+        loop.close()
 
 
 def sqlalchemy_implementation_custom_ids():
     import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(sqlalchemy_async_implementation_custom_ids())
+        return loop.run_until_complete(sqlalchemy_async_implementation_custom_ids())
+    finally:
+        loop.close()
 
 
 def sqlalchemy_implementation_string_pk():
     import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(sqlalchemy_async_implementation_string_pk())
+        return loop.run_until_complete(sqlalchemy_async_implementation_string_pk())
+    finally:
+        loop.close()
 
 
 def sqlalchemy_implementation_integrity_errors():
     import asyncio  # noqa: PLC0415 pylint: disable=import-outside-toplevel
 
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(sqlalchemy_async_implementation_integrity_errors())
+        return loop.run_until_complete(sqlalchemy_async_implementation_integrity_errors())
+    finally:
+        loop.close()
