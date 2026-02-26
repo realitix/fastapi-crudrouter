@@ -1,5 +1,6 @@
-from setuptools import setup, find_packages
 from distutils.util import convert_path
+
+from setuptools import find_packages, setup
 
 
 def get_version():

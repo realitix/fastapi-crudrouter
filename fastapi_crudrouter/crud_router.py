@@ -621,8 +621,10 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         self.get_all_schema = get_all_schema if get_all_schema else schema
 
         # Extract computed column names from get_all_schema for sorting support
-        _, _, _, custom_func_fields = self.get_fields(self.get_all_schema)
-        self._order_builder.set_computed_columns(set(custom_func_fields.keys()))
+        _, join_fields_for_sort, _, custom_func_fields = self.get_fields(self.get_all_schema)
+        self._order_builder.set_computed_columns(
+            set(custom_func_fields.keys()) | set(join_fields_for_sort.keys())
+        )
 
     def _init_filtering(self, filter_schema: Optional[Type[PYDANTIC_SCHEMA]]) -> None:
         """Initialize filtering system"""

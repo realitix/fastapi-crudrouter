@@ -1,5 +1,5 @@
-import re
 from os import environ
+import re
 
 from github import Github
 from github.GitRelease import GitRelease
