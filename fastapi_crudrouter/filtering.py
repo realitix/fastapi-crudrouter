@@ -178,10 +178,13 @@ class FilterBuilder:
         - Comma-separated strings: split into a list (e.g., "ACTIVE,PENDING")
         - Single values: converted to single-item lists
 
+        Values are automatically cast to match the column's Python type
+        (e.g., string "4" becomes int 4 for integer columns).
+
         This allows URL parameters like:
         - ?status__in=ACTIVE (single value)
         - ?status__in=ACTIVE,PENDING (comma-separated)
-        - ?status__in=ACTIVE&status__in=PENDING (multiple params, if supported)
+        - ?teacher_id__in=4,5 (numeric comma-separated)
 
         Args:
             query: SQLAlchemy Select query
@@ -202,7 +205,16 @@ class FilterBuilder:
             # Single value: wrap in list
             values = [value]
 
-        return query.where(getattr(self.model, field).in_(values))
+        # Cast values to match the column's Python type (e.g., str -> int)
+        column = getattr(self.model, field)
+        try:
+            col_python_type = column.property.columns[0].type.python_type
+            if col_python_type in (int, float):
+                values = [col_python_type(v) for v in values]
+        except (AttributeError, NotImplementedError, ValueError):
+            pass  # Keep values as-is if type detection fails
+
+        return query.where(column.in_(values))
 
 
 class OrderByBuilder:

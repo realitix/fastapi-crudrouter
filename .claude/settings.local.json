@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(rm:*)",
+      "Bash(sudo rm:*)",
+      "Bash(mv:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(export:*)",
+      "Bash(uv:*)",
+      "Bash(chmod:*)",
+      "Bash(./lint.sh)",
+      "Bash(make:*)",
+      "Bash(pytest:*)",
+      "Bash(ls:*)",
+      "Bash(git commit:*)",
+      "Bash(git add fastapi_crudrouter/crud_router.py)",
+      "Bash(git add:*)",
+      "Bash(flake8:*)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "Bash(mypy:*)",
+      "Bash(git log:*)",
+      "WebSearch",
+      "WebFetch(domain:www.starlette.io)",
+      "Bash(ruff check:*)",
+      "Bash(pylint:*)",
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)"
+    ],
+    "deny": []
+  }
+}
