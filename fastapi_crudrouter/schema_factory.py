@@ -242,11 +242,26 @@ def _is_enum_type(field_type: Any) -> bool:
         return False
 
 
+def _is_numeric_type(field_type: Any) -> bool:
+    """Check if a type is a numeric type (int or float).
+
+    Args:
+        field_type: Type to check
+
+    Returns:
+        True if field_type is int or float, False otherwise
+    """
+    try:
+        return isinstance(field_type, type) and issubclass(field_type, (int, float))
+    except TypeError:
+        return False
+
+
 def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
     """Generate filter fields with special operators for date, string, and enum types.
 
     Creates additional filter fields with __gte, __lte operators for date/datetime
-    fields, __like operator for string fields, and __in operator for enum fields.
+    fields, __like operator for string fields, and __in operator for enum and numeric fields.
 
     Args:
         base_fields: Dictionary of field names to FieldInfo from a Pydantic model
@@ -272,8 +287,8 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
         - String fields get __like operator for case-insensitive pattern matching
         - Date/datetime fields get __gte and __lte for range filtering
         - Enum fields get __in operator for multi-value filtering
+        - Int/float fields get __in operator for multi-value filtering
         - Existing operator fields (already ending in __like, __gte, __lte, __in) are skipped
-        - Int/float fields do not get automatic operators
     """
     new_fields = {}
     for field_name, field_info in base_fields.items():
@@ -296,8 +311,8 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
             if like not in base_fields:
                 new_fields[like] = (Optional[str], None)
 
-        elif _is_enum_type(field_type):
-            # Add __in operator for enum fields (multi-value filtering)
+        elif _is_enum_type(field_type) or _is_numeric_type(field_type):
+            # Add __in operator for enum and numeric fields (multi-value filtering)
             # Use str type to accept comma-separated values from URL query params
             # The FilterBuilder._handle_in method will convert the string to a list
             in_field = f"{field_name}__in"
