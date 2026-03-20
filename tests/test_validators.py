@@ -333,3 +333,206 @@ class TestCreateDefaultsWithNoUser:
             res = client.post("/items", json={"name": "Test", "price": 10.0})
             assert res.status_code == 201
             assert res.json()["school_id"] is None
+
+
+class TestCreateDefaultsWithDBOnlyFields:
+    """Tests for create_defaults returning fields not in the Pydantic schema.
+
+    This covers the case where create_defaults provides values for DB columns
+    (e.g. tenant_id) that are NOT part of the create_schema. These fields
+    must be applied directly to the SQLAlchemy model without going through
+    Pydantic validation.
+    """
+
+    @pytest.fixture
+    def db_only_defaults_app(self):
+        """Create app where create_defaults returns DB-only fields"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_create_defaults_db_only.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+                # DB-only field: not in create schema
+                tenant_id = Column(Integer, nullable=True)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            class ItemSchema(BaseModel):
+                model_config = ConfigDict(from_attributes=True)
+
+                id: int
+                name: str
+                price: float
+                tenant_id: Optional[int] = None
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+                # tenant_id is intentionally NOT here
+
+            def get_current_user():
+                return MockUser(user_id=42, school_id=123)
+
+            def get_defaults(user: MockUser) -> dict:
+                return {"tenant_id": user.school_id}
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                current_user_dependency=get_current_user,
+                create_defaults=get_defaults,
+            )
+            app.include_router(router)
+            return app
+
+        return run_async(_setup())
+
+    def test_db_only_defaults_applied(self, db_only_defaults_app):
+        """Test that defaults for DB-only fields are applied to the model"""
+        app = db_only_defaults_app
+        with TestClient(app) as client:
+            res = client.post("/items", json={"name": "Test", "price": 10.0})
+            assert res.status_code == 201
+
+            data = res.json()
+            assert data["tenant_id"] == 123
+
+    def test_db_only_defaults_with_mixed_fields(self):
+        """Test defaults with both schema and DB-only fields"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_create_defaults_mixed.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+                school_id = Column(Integer, nullable=True)
+                tenant_id = Column(Integer, nullable=True)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            class ItemSchema(BaseModel):
+                model_config = ConfigDict(from_attributes=True)
+
+                id: int
+                name: str
+                price: float
+                school_id: Optional[int] = None
+                tenant_id: Optional[int] = None
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+                school_id: Optional[int] = None
+                # tenant_id NOT in create schema
+
+            def get_current_user():
+                return MockUser(user_id=42, school_id=123)
+
+            def get_defaults(user: MockUser) -> dict:
+                # school_id is in schema, tenant_id is DB-only
+                return {"school_id": user.school_id, "tenant_id": 999}
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                current_user_dependency=get_current_user,
+                create_defaults=get_defaults,
+                bulk_create_route=True,
+            )
+            app.include_router(router)
+            return app
+
+        app = run_async(_setup())
+        with TestClient(app) as client:
+            res = client.post("/items", json={"name": "Test", "price": 10.0})
+            assert res.status_code == 201
+
+            data = res.json()
+            # Schema field default applied
+            assert data["school_id"] == 123
+            # DB-only field default applied
+            assert data["tenant_id"] == 999
+
+    def test_db_only_defaults_bulk_create(self):
+        """Test that DB-only defaults work with bulk create"""
+
+        async def _setup():
+            app, engine, Base, get_session = await create_test_app_base(
+                "sqlite+aiosqlite:///./test_create_defaults_bulk_db_only.db"
+            )
+
+            class ItemModel(Base):
+                __tablename__ = "items"
+                id = Column(Integer, primary_key=True, index=True)
+                name = Column(String)
+                price = Column(Float)
+                tenant_id = Column(Integer, nullable=True)
+
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            class ItemSchema(BaseModel):
+                model_config = ConfigDict(from_attributes=True)
+
+                id: int
+                name: str
+                price: float
+                tenant_id: Optional[int] = None
+
+            class ItemCreateSchema(BaseModel):
+                name: str
+                price: float
+
+            def get_current_user():
+                return MockUser(user_id=42, school_id=123)
+
+            def get_defaults(user: MockUser) -> dict:
+                return {"tenant_id": user.school_id}
+
+            router = CRUDRouter(
+                schema=ItemSchema,
+                db_model=ItemModel,
+                db=get_session,
+                create_schema=ItemCreateSchema,
+                prefix="items",
+                current_user_dependency=get_current_user,
+                create_defaults=get_defaults,
+                bulk_create_route=True,
+            )
+            app.include_router(router)
+            return app
+
+        app = run_async(_setup())
+        with TestClient(app) as client:
+            items = [
+                {"name": f"Item {i}", "price": float(i * 10)}
+                for i in range(3)
+            ]
+            res = client.post("/items/bulk", json=items)
+            assert res.status_code == 201
+
+            # Verify all bulk-created items got the DB-only default
+            res = client.get("/items")
+            data = res.json()["data"]
+            assert len(data) == 3
+            for item in data:
+                assert item["tenant_id"] == 123

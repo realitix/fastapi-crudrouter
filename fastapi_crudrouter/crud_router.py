@@ -1287,6 +1287,40 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 403, f"No permission to {action.replace('_', ' ')} resources"
             )
 
+    def _apply_create_defaults(
+        self, item: PYDANTIC_SCHEMA, user: Any
+    ) -> tuple[PYDANTIC_SCHEMA, dict[str, Any]]:
+        """Split create_defaults into schema-compatible and DB-only fields,
+        merge schema-compatible defaults with the incoming item.
+
+        Returns:
+            (merged_item, db_only_defaults)
+        """
+        if not (self.create_defaults and user):
+            return item, {}
+
+        defaults = self.create_defaults(user)
+        if not defaults:
+            return item, {}
+
+        schema_fields = set(self.create_schema.model_fields.keys())
+        schema_defaults: dict[str, Any] = {}
+        db_only_defaults: dict[str, Any] = {}
+        for k, v in defaults.items():
+            if k in schema_fields:
+                schema_defaults[k] = v
+            else:
+                db_only_defaults[k] = v
+
+        # Merge schema-compatible defaults with incoming data
+        # Explicitly set fields override defaults
+        merged_data = {**schema_defaults}
+        for key, value in item.model_dump().items():
+            if key in item.model_fields_set or key not in merged_data:
+                merged_data[key] = value
+
+        return self.create_schema(**merged_data), db_only_defaults
+
     def _parse_pagination(
         self, pagination: PAGINATION
     ) -> tuple[int, Optional[int], int]:
@@ -1499,33 +1533,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 raise HTTPException(403, "No permission to create resources")
 
             # Apply create_defaults before validation
-            # Defaults are merged with incoming data (explicit values override defaults)
-            if self.create_defaults and user:
-                defaults = self.create_defaults(user)
-                if defaults:
-                    # Get explicit values from incoming model
-                    model_data = model.model_dump()
-                    model_fields_set = model.model_fields_set
-
-                    # Merge: defaults first, then explicit values override
-                    merged_data = {**defaults}
-                    for key, value in model_data.items():
-                        # Only override if the field was explicitly set in the request
-                        if key in model_fields_set:
-                            merged_data[key] = value
-                        elif key not in merged_data:
-                            # Field not in defaults and not explicitly set: use model value
-                            merged_data[key] = value
-
-                    # Reconstruct model with merged data
-                    model = self.create_schema(**merged_data)
+            model, _db_only_defaults = self._apply_create_defaults(model, user)
 
             # Business validation
             if self.create_validator and user:
                 model = await self.create_validator(model, user, db)
 
             try:
-                db_model: Model = self.db_model(**model.model_dump())
+                db_model: Model = self.db_model(
+                    **model.model_dump(), **_db_only_defaults
+                )
                 db.add(db_model)
                 await db.commit()
                 await db.refresh(db_model)
@@ -1814,23 +1831,19 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             for idx, item in enumerate(items):  # pylint: disable=too-many-nested-blocks
                 try:
                     # Apply create_defaults
-                    if self.create_defaults and user:
-                        defaults = self.create_defaults(user)
-                        if defaults:
-                            item_data = item.model_dump()
-                            item_fields_set = item.model_fields_set
-                            merged_data = {**defaults}
-                            for key, value in item_data.items():
-                                if key in item_fields_set or key not in merged_data:
-                                    merged_data[key] = value
-                            item = self.create_schema(**merged_data)
+                    item, _item_db_defaults = self._apply_create_defaults(
+                        item, user
+                    )
 
                     # Business validation
                     if self.create_validator and user:
                         item = await self.create_validator(item, user, db)
 
                     # Create the item
-                    db_model: Model = self.db_model(**item.model_dump())
+                    item_data = item.model_dump()
+                    db_model: Model = self.db_model(
+                        **item_data, **_item_db_defaults
+                    )
                     db.add(db_model)
                     await db.flush()  # Get the ID without committing
 
@@ -1838,7 +1851,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         {
                             "index": idx,
                             self._pk: getattr(db_model, self._pk),
-                            "data": item.model_dump(),
+                            "data": item_data,
                         }
                     )
 

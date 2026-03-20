@@ -590,9 +590,9 @@ class TestGenerateFieldsWithSuffixes:  # pylint: disable=too-many-public-methods
         assert "created_at__lte" in result
         # Enum field should have __in
         assert "status__in" in result
-        # Int field should not have automatic suffixes
+        # Int field should have __in suffix (numeric __in support)
         assert "count__like" not in result
-        assert "count__in" not in result
+        assert "count__in" in result
 
     def test_existing_in_field_not_duplicated(self):
         """Test that existing __in field is not duplicated"""
