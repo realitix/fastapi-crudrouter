@@ -117,7 +117,7 @@ class TestCustomFuncFieldsScalar:
     def test_scalar_custom_func_field_categorized(self, custom_func_app):
         """Test that scalar callable is categorized as custom_func_field."""
         _app, schema, router = custom_func_app
-        _, _, join_list_fields, custom_func_fields = router.get_fields(schema)
+        _, _, join_list_fields, custom_func_fields, _, _ = router.get_fields(schema)
         assert "double_price" in custom_func_fields
         assert "double_price" not in join_list_fields
 
@@ -219,7 +219,7 @@ class TestCustomFuncFieldsListType:
         """Test that a callable is categorized as custom_func_field
         and not as join_list_field, regardless of field annotation type."""
         _app, schema, router, _func = list_custom_func_app
-        _, _, join_list_fields, custom_func_fields = router.get_fields(schema)
+        _, _, join_list_fields, custom_func_fields, _, _ = router.get_fields(schema)
         assert "item_count" in custom_func_fields
         assert "item_count" not in join_list_fields
 
@@ -282,7 +282,7 @@ class TestCustomFuncFieldsListAnnotation:
                 prefix="items",
             )
 
-            _, _, join_list, custom_func = router.get_fields(
+            _, _, join_list, custom_func, _, _ = router.get_fields(
                 ItemGetAllSchema
             )
             return join_list, custom_func
@@ -333,7 +333,7 @@ class TestCustomFuncFieldsListAnnotation:
                 prefix="items",
             )
 
-            _, _, join_list, custom_func = router.get_fields(
+            _, _, join_list, custom_func, _, _ = router.get_fields(
                 SchemaWithListCallable
             )
             return join_list, custom_func
@@ -402,7 +402,7 @@ class TestJoinListFieldsStillWork:
                 prefix="parents",
             )
 
-            _, _, join_list, custom_func = router.get_fields(
+            _, _, join_list, custom_func, _, _ = router.get_fields(
                 ParentGetAllSchema
             )
             return join_list, custom_func

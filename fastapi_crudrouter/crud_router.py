@@ -102,7 +102,7 @@ try:
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.ext.declarative import DeclarativeMeta
     from sqlalchemy.future import select
-    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.orm import DeclarativeBase, RelationshipProperty, selectinload
 except ImportError as e:
     raise ImportError("SQLAlchemy must be installed to use fastapi-crudrouter") from e
 
@@ -498,6 +498,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             col.key: getattr(db_model, col.key) for col in sa_inspect(db_model).columns
         }
 
+        # Cache get_fields() results per schema to avoid repeated introspection
+        self._fields_cache: dict[type, tuple] = {}
+
         # Initialize helper classes for modular architecture
         self._filter_builder = FilterBuilder(db_model)
         self._order_builder = OrderByBuilder(db_model, self._pk, default_order_by)
@@ -621,7 +624,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         self.get_all_schema = get_all_schema if get_all_schema else schema
 
         # Extract computed column names from get_all_schema for sorting support
-        _, join_fields_for_sort, _, custom_func_fields = self.get_fields(self.get_all_schema)
+        _, join_fields_for_sort, _, custom_func_fields, _, _ = self.get_fields(
+            self.get_all_schema
+        )
         self._order_builder.set_computed_columns(
             set(custom_func_fields.keys()) | set(join_fields_for_sort.keys())
         )
@@ -995,33 +1000,54 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         return getattr(self.db_model, field_name)
 
     def get_fields(self, schema) -> Any:
-        """Parse schema fields to identify joins, list joins, and custom functions.
+        """Parse schema fields to identify joins, list joins, custom functions,
+        and auto-detected ORM relationships.
 
         Analyzes a Pydantic schema's fields to separate:
         - Base model fields (direct columns)
-        - Join fields (single relationships)
-        - Join list fields (one-to-many relationships)
-        - Custom function fields (computed fields)
+        - Join fields (single relationships via Field metadata)
+        - Join list fields (one-to-many relationships via Field metadata)
+        - Custom function fields (computed fields via Field metadata)
+        - ORM relationships (auto-detected RelationshipProperty without metadata)
+
+        When ORM relationships are detected, the router switches to ORM mode:
+        ``select(Model).options(selectinload(...))`` instead of
+        ``select(col1, col2, ...)``, enabling automatic relationship loading
+        with Pydantic ``from_attributes=True`` serialization.
+
+        If any schema field maps to a Python ``@property`` on the model (common
+        pattern for Person-centric architectures), the router eagerly loads ALL
+        non-collection relationships on the model plus one level of nesting.
+        This is required because async SQLAlchemy does not support lazy loading
+        (raises ``MissingGreenlet``), so all data the property may access must
+        be pre-loaded.
 
         Args:
             schema: Pydantic schema to parse
 
         Returns:
-            Tuple of (base_class_fields, join_fields, join_list_fields, custom_func_fields)
+            Tuple of (base_class_fields, join_fields, join_list_fields,
+                       custom_func_fields, orm_relationships,
+                       has_property_fields)
             - base_class_fields: List of SQLAlchemy column attributes
             - join_fields: Dict of field_name -> (relationship, is_outer_join)
             - join_list_fields: Dict of field_name -> (table, foreign_key, schema)
             - custom_func_fields: Dict of field_name -> custom_function
+            - orm_relationships: Dict of rel_name -> InstrumentedAttribute
+              (auto-detected relationships to eagerly load in ORM mode)
+            - has_property_fields: True if schema has @property fields
 
         Examples:
             >>> class UserSchema(BaseModel):
             ...     id: int
             ...     name: str
             ...     posts: List[PostSchema] = Field(metadata=[...])
-            >>> base, joins, list_joins, funcs = router.get_fields(UserSchema)
+            >>> base, joins, list_joins, funcs, orm_rels, has_props = router.get_fields(UserSchema)
             >>> # base = [User.id, User.name]
             >>> # list_joins = {'posts': (Post, Post.user_id, PostSchema)}
         """
+        if schema in self._fields_cache:
+            return self._fields_cache[schema]
 
         def type_can_be_none(type_hint):
             if get_origin(type_hint) is UnionType:
@@ -1035,6 +1061,8 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         join_fields = {}
         join_list_fields = {}
         custom_func_fields = {}
+        orm_relationships: dict[str, Any] = {}
+        has_property_fields = False
 
         # Pydantic v2 only
         fields_dict = schema.model_fields
@@ -1042,11 +1070,15 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         for field, annotation in remove_operator_fields(fields_dict).items():
             if not hasattr(annotation, "metadata") or not annotation.metadata:
                 if hasattr(self.db_model, field):
-                    # Only include actual SQLAlchemy columns, not Python properties
                     attr = getattr(self.db_model, field)
-                    # Check if it's an InstrumentedAttribute (SQLAlchemy column)
                     if hasattr(attr, "property") and hasattr(attr.property, "columns"):
                         base_class_fields.append(attr)
+                    elif hasattr(attr, "property") and isinstance(
+                        attr.property, RelationshipProperty
+                    ):
+                        orm_relationships[field] = attr
+                    elif isinstance(attr, property):
+                        has_property_fields = True
             else:
                 attribute = annotation.metadata[0]
                 # Pydantic v2 only
@@ -1071,7 +1103,26 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                         base_class_fields.append(attr)
                     # Otherwise ignore (Pydantic constraint on computed field)
 
-        return base_class_fields, join_fields, join_list_fields, custom_func_fields
+        # Safety net for @property fields: in async SQLAlchemy, accessing an
+        # unloaded relationship raises MissingGreenlet. Since we cannot
+        # introspect which relationships a @property accesses, we eagerly load
+        # ALL non-collection relationships on the model (+ one level deep).
+        if has_property_fields:
+            mapper = sa_inspect(self.db_model)
+            for rel in mapper.relationships:
+                if not rel.uselist and rel.key not in orm_relationships:
+                    orm_relationships[rel.key] = getattr(self.db_model, rel.key)
+
+        result = (
+            base_class_fields,
+            join_fields,
+            join_list_fields,
+            custom_func_fields,
+            orm_relationships,
+            has_property_fields,
+        )
+        self._fields_cache[schema] = result
+        return result
 
     def compute_query_join(self, query, join_fields) -> Any:
         """Add JOIN clauses to query for relationship fields.
@@ -1247,7 +1298,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             page, limit, skip = self._parse_pagination(pagination)
 
             # 3. Build base query with joins and custom functions
-            query, join_list_fields = self._build_base_query(self.get_all_schema)
+            query, join_list_fields, orm_mode = self._build_base_query(
+                self.get_all_schema
+            )
 
             # 4. Apply soft delete filter (exclude deleted items unless include_deleted=True)
             if self.soft_delete and not include_deleted:
@@ -1267,7 +1320,7 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
             # 9. Process results into models
             db_models = await self._process_results(
-                db, rows, self.get_all_schema, join_list_fields
+                db, rows, self.get_all_schema, join_list_fields, orm_mode
             )
 
             # 10. Build paginated response
@@ -1334,20 +1387,61 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
 
         return page, limit, skip
 
-    def _build_base_query(self, schema: Type[PYDANTIC_SCHEMA]) -> tuple[Any, Any]:
-        """Build base query with joins and custom functions"""
+    def _build_base_query(
+        self, schema: Type[PYDANTIC_SCHEMA]
+    ) -> tuple[Any, Any, bool]:
+        """Build base query with joins, custom functions, or ORM-mode loading.
+
+        Returns:
+            Tuple of (query, join_list_fields, orm_mode)
+            - query: SQLAlchemy select query
+            - join_list_fields: Dict for one-to-many subdata loading (column mode only)
+            - orm_mode: True if query selects full ORM model with selectinload
+        """
         (
             base_class_fields,
             join_fields,
             join_list_fields,
             custom_func_fields,
+            orm_relationships,
+            has_property_fields,
         ) = self.get_fields(schema)
 
-        query = select(*base_class_fields)
+        # ORM mode: when auto-detected relationships exist AND no metadata-based
+        # fields that require column-level select. This ensures full backward
+        # compatibility — existing schemas with Field(metadata=[...]) keep the
+        # exact same query behavior.
+        # Also activate ORM mode for @property fields on the model,
+        # since column-level select cannot serialize Python properties.
+        use_orm_mode = (
+            bool(orm_relationships) or has_property_fields
+        ) and not (
+            join_fields or join_list_fields or custom_func_fields
+        )
+
+        if use_orm_mode:
+            query = select(self.db_model)
+            for rel_name, rel_attr in orm_relationships.items():
+                loader = selectinload(rel_attr)
+                # For safety-net relationships (loaded for @property support),
+                # also load one level of nested non-collection relationships.
+                # This handles patterns like student_profile.person where the
+                # @property accesses a nested relationship.
+                rel_prop = rel_attr.property
+                target_mapper = rel_prop.mapper
+                for nested_rel in target_mapper.relationships:
+                    if not nested_rel.uselist:
+                        nested_attr = getattr(
+                            target_mapper.class_, nested_rel.key
+                        )
+                        query = query.options(loader.selectinload(nested_attr))
+                query = query.options(loader)
+            return query, {}, True
+
+        query = select(*base_class_fields).select_from(self.db_model)
         query = self.compute_query_join(query, join_fields)
         query = self.compute_custom_func(query, custom_func_fields)
-
-        return query, join_list_fields
+        return query, join_list_fields, False
 
     def _apply_filters(
         self,
@@ -1413,9 +1507,28 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         rows: list,
         schema: Type[PYDANTIC_SCHEMA],
         join_list_fields: Any,
+        orm_mode: bool = False,
     ) -> List[Model]:
-        """Process query results into schema models"""
+        """Process query results into schema models.
+
+        In ORM mode, rows contain full ORM model instances (from
+        ``select(Model)``). Pydantic's ``model_validate`` with
+        ``from_attributes=True`` reads attributes directly from the
+        ORM instance, including eagerly loaded relationships and
+        ``@property`` computed fields.
+
+        In column mode (default, backward compatible), rows are
+        named tuples of selected columns, assembled into dicts
+        and passed to the schema constructor.
+        """
         db_models: List[Model] = []
+
+        if orm_mode:
+            for row in rows:
+                instance = row[0]
+                model = schema.model_validate(instance, from_attributes=True)
+                db_models.append(model)
+            return db_models
 
         if join_list_fields:
             # Extract all primary keys first for batch loading
@@ -1485,13 +1598,9 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 await self.access_checker(item_id, user, db)
 
             try:
-                base_class_fields, join_fields, join_list_fields, custom_func_fields = (
-                    self.get_fields(self.schema)
+                query, join_list_fields, orm_mode = self._build_base_query(
+                    self.schema
                 )
-                query = select(*base_class_fields)
-                query = self.compute_query_join(query, join_fields)
-                query = self.compute_custom_func(query, custom_func_fields)
-                query = query.select_from(self.db_model)
                 query = query.where(getattr(self.db_model, self._pk) == item_id)
 
                 # Apply soft delete filter (exclude soft-deleted items)
@@ -1499,13 +1608,10 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                     query = self._apply_soft_delete_filter(query)
 
                 row = (await db.execute(query)).one()
-                # pylint: disable=protected-access
-                row_dict = (
-                    row._asdict() if hasattr(row, "_asdict") else dict(row._mapping)
+                models = await self._process_results(
+                    db, [row], self.schema, join_list_fields, orm_mode
                 )
-                pk_value = row_dict.get(self._pk, getattr(row, self._pk, None))
-                subdata = await self.compute_subdata(db, pk_value, join_list_fields)
-                model = self.schema(**row_dict, **subdata)
+                model = models[0]
             except NoResultFound:
                 model = None
 
