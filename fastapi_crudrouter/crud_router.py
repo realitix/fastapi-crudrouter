@@ -92,6 +92,7 @@ from .schema_factory import (
     create_filter,
     get_pk_type,
     is_optional_type,
+    is_query_parameter_type,
     optional_schema_factory,
     schema_factory,
 )
@@ -693,8 +694,12 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         auto_filter_fields = {}
 
         for field_name, field_info in self.schema.model_fields.items():
-            # Only include simple fields (exclude joins, custom functions)
-            if not self._is_derived_field(field_info):
+            # Only include simple fields (exclude joins, custom functions) that
+            # a client can actually send: a list or JSON column would turn into
+            # a body field on the GET route, which no caller can fill.
+            if not self._is_derived_field(field_info) and is_query_parameter_type(
+                field_info.annotation
+            ):
                 # Make field optional for filtering
                 origin = get_origin(field_info.annotation)
                 if origin is UnionType and type(None) in get_args(

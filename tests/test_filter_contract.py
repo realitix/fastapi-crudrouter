@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 import pytest
-from sqlalchemy import Column, ForeignKey, Integer, Numeric, String
+from sqlalchemy import JSON, Column, ForeignKey, Integer, Numeric, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import StaticPool
@@ -50,6 +50,8 @@ class Rate(Base):
     # A column carrying a Pydantic constraint, which used to be mistaken for a
     # join and left with no filter at all.
     label = Column(String)
+    # A column no query parameter can carry.
+    tags = Column(JSON)
 
 
 class RateRead(BaseModel):
@@ -58,6 +60,8 @@ class RateRead(BaseModel):
     code: Optional[str] = None
     rate: Decimal
     label: Optional[str] = Field(None, max_length=10)
+    # A list column: FastAPI would make it a body field of the GET route.
+    tags: Optional[list[str]] = None
     # A joined column: present in the schema, never filterable.
     lab_name: Annotated[Optional[str], Lab.name] = None
 
@@ -150,6 +154,11 @@ class TestFilterContract:
         """It is in the schema, so a client would have invented a filter for it."""
         assert "lab_name" not in options["x-filters"]
 
+    def test_list_column_advertises_nothing(self, options):
+        """A list cannot travel as a query parameter, so it is not a filter."""
+        assert "tags" in options["properties"]
+        assert "tags" not in options["x-filters"]
+
     def test_keys_are_whole_query_parameters(self, options):
         """The caller never builds a parameter name of its own.
 
@@ -159,6 +168,23 @@ class TestFilterContract:
         for column, operators in options["x-filters"].items():
             for operator, key in operators.items():
                 assert key == column if operator == "eq" else key.startswith(column)
+
+
+class TestTheListRouteTakesNoBody:
+    """A filter FastAPI cannot put in the query string ends up in a body.
+
+    That body sits on a ``GET`` route: the generated client cannot fill it, and
+    the route documents a payload it never reads.
+    """
+
+    def test_get_all_declares_no_request_body(self):
+        app = asyncio.run(_build_app())
+        operation = app.openapi()["paths"]["/rate"]["get"]
+        assert "requestBody" not in operation
+
+    def test_the_list_answers_without_one(self):
+        client = TestClient(asyncio.run(_build_app()))
+        assert client.get("/rate").status_code == 200
 
 
 class TestAdvertisedFiltersReallyWork:

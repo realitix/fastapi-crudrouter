@@ -13,6 +13,7 @@ from fastapi_crudrouter.schema_factory import (
     _is_string_like_type,
     extract_python_type,
     generate_fields_with_suffixes,
+    is_query_parameter_type,
 )
 
 # Import Pydantic string types for testing
@@ -728,6 +729,32 @@ class TestFilterIntegration:
         # Should find the potato despite case difference
         assert len(items) == 1
         assert items[0]["color"] == "BRIGHT RED"
+
+
+class TestIsQueryParameterType:
+    """Which fields a client can actually send in the query string."""
+
+    def test_scalars_are_query_parameters(self):
+        for annotation in (int, str, date, Decimal, bool, Optional[str]):
+            assert is_query_parameter_type(annotation)
+
+    def test_an_enum_is_a_query_parameter(self):
+        class Status(str, Enum):
+            ACTIVE = "ACTIVE"
+
+        assert is_query_parameter_type(Status)
+        assert is_query_parameter_type(Optional[Status])
+
+    def test_collections_are_not(self):
+        """FastAPI turns these into a body field of the GET route."""
+        for annotation in (list[str], Optional[list[int]], dict, set[str], tuple):
+            assert not is_query_parameter_type(annotation)
+
+    def test_a_nested_model_is_not(self):
+        class Nested(BaseModel):
+            value: int
+
+        assert not is_query_parameter_type(Nested)
 
 
 class TestIsNumericType:

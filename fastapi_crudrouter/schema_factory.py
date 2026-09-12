@@ -1,5 +1,6 @@
 """Schema factory functions for CRUD operations"""
 
+from collections.abc import Mapping, Sequence, Set
 from copy import copy
 from datetime import date, datetime
 from decimal import Decimal
@@ -265,6 +266,30 @@ def _is_numeric_type(field_type: Any) -> bool:
         return issubclass(field_type, (int, float, Decimal))
     except TypeError:
         return False
+
+
+def is_query_parameter_type(annotation: Any) -> bool:
+    """Whether FastAPI can carry this field as a query parameter.
+
+    A field of a model taken as a dependency becomes a query parameter only
+    when its type is scalar. A list, a dict or a nested model becomes a *body*
+    field instead -- on a ``GET`` route, where no client can send it: the
+    filter is then advertised, reachable by nobody, and the route grows a
+    request body it never reads.
+
+    Args:
+        annotation: Type annotation of the field, ``Optional`` included
+
+    Returns:
+        True unless the type is a collection, a mapping or a nested model
+    """
+    field_type = extract_python_type(annotation)
+    if not isinstance(field_type, type):
+        return True
+    if issubclass(field_type, (str, bytes, Enum)):
+        # A string is a Sequence, and an enum is scalar however it is spelled.
+        return True
+    return not issubclass(field_type, (BaseModel, Mapping, Sequence, Set))
 
 
 def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
