@@ -2,6 +2,7 @@
 
 from copy import copy
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 from types import UnionType
 from typing import Annotated, Any, Optional, Type, Union, get_args, get_origin
@@ -243,16 +244,25 @@ def _is_enum_type(field_type: Any) -> bool:
 
 
 def _is_numeric_type(field_type: Any) -> bool:
-    """Check if a type is a numeric type (int or float).
+    """Check if a type is numeric: int, float or Decimal.
+
+    ``Decimal`` is the type SQLAlchemy maps a ``NUMERIC`` column to, so money
+    and rate columns land here; leaving it out gave them no operator at all,
+    not even a range, while dates had one.
+
+    ``bool`` is excluded although it subclasses ``int``: comparing a flag with
+    ``>=`` or listing it with ``__in`` says nothing a plain equality does not.
 
     Args:
         field_type: Type to check
 
     Returns:
-        True if field_type is int or float, False otherwise
+        True if field_type is int, float or Decimal (but not bool)
     """
     try:
-        return isinstance(field_type, type) and issubclass(field_type, (int, float))
+        if not isinstance(field_type, type) or issubclass(field_type, bool):
+            return False
+        return issubclass(field_type, (int, float, Decimal))
     except TypeError:
         return False
 
@@ -261,7 +271,8 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
     """Generate filter fields with special operators for date, string, and enum types.
 
     Creates additional filter fields with __gte, __lte operators for date/datetime
-    fields, __like operator for string fields, and __in operator for enum and numeric fields.
+    and numeric fields, __like operator for string fields, and __in operator for
+    enum and numeric fields.
 
     Args:
         base_fields: Dictionary of field names to FieldInfo from a Pydantic model
@@ -287,7 +298,7 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
         - String fields get __like operator for case-insensitive pattern matching
         - Date/datetime fields get __gte and __lte for range filtering
         - Enum fields get __in operator for multi-value filtering
-        - Int/float fields get __in operator for multi-value filtering
+        - Numeric fields (int, float, Decimal) get __in plus __gte and __lte
         - Existing operator fields (already ending in __like, __gte, __lte, __in) are skipped
     """
     new_fields = {}
@@ -318,6 +329,15 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
             in_field = f"{field_name}__in"
             if in_field not in base_fields:
                 new_fields[in_field] = (Optional[str], None)
+
+            if _is_numeric_type(field_type):
+                # Numbers are ordered, so they take a range like dates do.
+                # Without it an amount column could only be matched exactly,
+                # and "every gap above 1000" was not expressible at all.
+                for suffix in ("__lte", "__gte"):
+                    bound = f"{field_name}{suffix}"
+                    if bound not in base_fields:
+                        new_fields[bound] = (Optional[field_type], None)
 
     return new_fields
 

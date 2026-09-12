@@ -63,6 +63,7 @@ from typing import (
     Any,
     AsyncGenerator,
     Callable,
+    ClassVar,
     Coroutine,
     List,
     NoReturn,
@@ -666,13 +667,34 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             Depends(self.filter_schema) if self.filter_schema else Depends(lambda: None)
         )
 
+    @staticmethod
+    def _is_derived_field(field_info: Any) -> bool:
+        """Whether a read-schema field is computed rather than a plain column.
+
+        Metadata on a field marks the joins and custom functions ``get_fields``
+        resolves: a SQLAlchemy attribute (it carries ``class_``), a callable, or
+        the ``(attribute, foreign_key)`` tuple of a list join. Those are the ones
+        a generated equality filter cannot address.
+
+        A Pydantic constraint such as ``Field(max_length=10)`` also lands in
+        metadata, and treating it as a join used to strip the column of every
+        filter without a word -- the caller only saw a filter that did nothing.
+        """
+        metadata = getattr(field_info, "metadata", None)
+        if not metadata:
+            return False
+        attribute = metadata[0]
+        if callable(attribute) and not isinstance(attribute, (list, tuple)):
+            return True
+        return isinstance(attribute, (list, tuple)) or hasattr(attribute, "class_")
+
     def _generate_auto_filter_fields(self) -> dict[str, tuple]:
         """Generate automatic filter fields from schema"""
         auto_filter_fields = {}
 
         for field_name, field_info in self.schema.model_fields.items():
             # Only include simple fields (exclude joins, custom functions)
-            if not field_info.metadata:
+            if not self._is_derived_field(field_info):
                 # Make field optional for filtering
                 origin = get_origin(field_info.annotation)
                 if origin is UnionType and type(None) in get_args(
@@ -1255,11 +1277,51 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             query = fun(query)
         return query
 
+    #: Suffix a filter key carries, mapped to the operator name published by
+    #: ``OPTIONS``. A key without any suffix is a plain equality.
+    _FILTER_SUFFIXES: ClassVar[dict[str, str]] = {
+        "__like": "like",
+        "__gte": "gte",
+        "__lte": "lte",
+        "__in": "in",
+    }
+
+    def _describe_filters(self) -> dict[str, dict[str, str]]:
+        """The filters this route accepts, per column: operator -> query key.
+
+        A client cannot infer this from the model schema, and guessing is how
+        filters silently stop working: an unknown query parameter is dropped by
+        FastAPI, so a list keeps answering with every row. Two ways the guess
+        goes wrong on the same schema -- a ``Decimal`` serializes as a string,
+        so a client reads it as text and asks for ``__like``; and a joined
+        column appears in the schema while no filter exists for it at all.
+
+        The query key is given whole rather than as a suffix to append, so the
+        caller never builds a parameter name of its own.
+        """
+        filter_schema = getattr(self, "filter_schema", None)
+        if filter_schema is None:
+            return {}
+
+        described: dict[str, dict[str, str]] = {}
+        for key in filter_schema.model_fields:
+            column, operator = key, "eq"
+            for suffix, name in self._FILTER_SUFFIXES.items():
+                if key.endswith(suffix):
+                    column, operator = key[: -len(suffix)], name
+                    break
+            described.setdefault(column, {})[operator] = key
+        return described
+
     def _get_all_options(self) -> dict[str, Any]:
         """Get schema options"""
-        return self.get_all_schema.model_json_schema(
+        schema = self.get_all_schema.model_json_schema(
             ref_template="{model}", mode="serialization"
         )
+        # ``x-`` prefixed, the JSON Schema convention for an extension, so this
+        # cannot collide with a keyword of the standard.
+        schema["x-filters"] = self._describe_filters()
+        return schema
 
     def _raise(self, e: Exception, status_code: int = 422) -> NoReturn:
         """Handle exceptions with optional callback"""

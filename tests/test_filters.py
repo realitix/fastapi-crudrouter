@@ -1,6 +1,7 @@
 """Tests for filter generation and filtering functionality"""
 
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum, IntEnum
 from typing import Annotated, Optional, Union
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 from fastapi_crudrouter.schema_factory import (
     _is_enum_type,
+    _is_numeric_type,
     _is_string_like_type,
     extract_python_type,
     generate_fields_with_suffixes,
@@ -340,18 +342,61 @@ class TestGenerateFieldsWithSuffixes:  # pylint: disable=too-many-public-methods
         assert result["updated_at__gte"] == (Optional[datetime], None)
         assert result["updated_at__lte"] == (Optional[datetime], None)
 
-    def test_int_field_no_suffix(self):
-        """Test that int field does not generate suffixes"""
+    def test_int_field_gets_range_and_in(self):
+        """An int is ordered, so it takes a range like a date does."""
 
         class TestSchema(BaseModel):
             count: int
 
-        base_fields = TestSchema.model_fields
-        result = generate_fields_with_suffixes(base_fields)
+        result = generate_fields_with_suffixes(TestSchema.model_fields)
 
+        assert "count__gte" in result
+        assert "count__lte" in result
+        assert "count__in" in result
+        # A number is not text: matching it with a pattern is meaningless.
         assert "count__like" not in result
-        assert "count__gte" not in result
-        assert "count__lte" not in result
+
+    def test_decimal_field_gets_range_and_in(self):
+        """A NUMERIC column maps to Decimal and must be filterable as a number.
+
+        Regression: Decimal matched no branch at all, so a money or rate column
+        accepted nothing but an exact equality. A client reading the serialized
+        schema sees ``"type": "string"`` and asks for ``__like``, which is not a
+        declared parameter -- FastAPI drops it and the list answers with every
+        row instead of filtering.
+        """
+
+        class TestSchema(BaseModel):
+            rate: Decimal
+            amount: Optional[Decimal] = None
+
+        result = generate_fields_with_suffixes(TestSchema.model_fields)
+
+        for field in ("rate", "amount"):
+            assert f"{field}__gte" in result
+            assert f"{field}__lte" in result
+            assert f"{field}__in" in result
+            assert f"{field}__like" not in result
+
+    def test_decimal_range_bound_keeps_the_decimal_type(self):
+        """The bound is typed Decimal, so FastAPI parses "2.5" instead of 2.5."""
+
+        class TestSchema(BaseModel):
+            rate: Decimal
+
+        result = generate_fields_with_suffixes(TestSchema.model_fields)
+
+        assert result["rate__gte"] == (Optional[Decimal], None)
+
+    def test_bool_field_gets_no_operator(self):
+        """bool subclasses int but ordering or listing a flag says nothing."""
+
+        class TestSchema(BaseModel):
+            enabled: bool
+
+        result = generate_fields_with_suffixes(TestSchema.model_fields)
+
+        assert not [key for key in result if key.startswith("enabled__")]
 
     def test_multiple_fields_generate_correct_suffixes(self):
         """Test multiple fields generate correct type-based suffixes"""
@@ -369,9 +414,10 @@ class TestGenerateFieldsWithSuffixes:  # pylint: disable=too-many-public-methods
         assert "name__like" in result
         assert "description__like" in result
 
-        # Int field should not have suffixes
+        # A number takes a range, never a pattern
         assert "count__like" not in result
-        assert "count__gte" not in result
+        assert "count__gte" in result
+        assert "count__lte" in result
 
         # Date field should have __gte and __lte
         assert "created_at__gte" in result
@@ -682,3 +728,27 @@ class TestFilterIntegration:
         # Should find the potato despite case difference
         assert len(items) == 1
         assert items[0]["color"] == "BRIGHT RED"
+
+
+class TestIsNumericType:
+    """Which types are treated as numbers by the filter generator."""
+
+    def test_int_and_float_are_numeric(self):
+        assert _is_numeric_type(int)
+        assert _is_numeric_type(float)
+
+    def test_decimal_is_numeric(self):
+        """A NUMERIC column maps to Decimal, which is a number like any other."""
+        assert _is_numeric_type(Decimal)
+
+    def test_bool_is_not_numeric(self):
+        """bool subclasses int, but a flag has no range and no useful list."""
+        assert not _is_numeric_type(bool)
+
+    def test_non_numeric_types(self):
+        for field_type in (str, date, datetime, dict, list, type(None)):
+            assert not _is_numeric_type(field_type)
+
+    def test_non_type_argument(self):
+        """A parametrized generic is not a class and must not raise."""
+        assert not _is_numeric_type(Optional[int])
