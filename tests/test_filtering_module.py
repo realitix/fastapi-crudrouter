@@ -1,8 +1,10 @@
 """Unit tests for filtering module"""
 # pylint: disable=protected-access
 
+from decimal import Decimal
+
 from pydantic import BaseModel
-from sqlalchemy import Column, Integer, String, select
+from sqlalchemy import Column, Integer, Numeric, String, select
 from sqlalchemy.orm import declarative_base
 
 from fastapi_crudrouter.filtering import FilterBuilder, FilterOperator, OrderByBuilder
@@ -19,6 +21,7 @@ class SampleModel(Base):
     name = Column(String)
     age = Column(Integer)
     email = Column(String)
+    rate = Column(Numeric(10, 4))
 
 
 class SampleFilterSchema(BaseModel):
@@ -130,6 +133,42 @@ class TestFilterBuilder:  # pylint: disable=too-many-public-methods
         query = select(SampleModel)
         result = builder._handle_in(query, "name", "John")
         assert result is not None
+
+    @staticmethod
+    def _in_values(query):
+        """The values bound into the IN clause the builder just produced."""
+        return query.whereclause.right.value
+
+    def test_handle_in_casts_to_the_column_type(self):
+        """A number must not stay a string once it reaches the database.
+
+        PostgreSQL binds a string as ``VARCHAR`` and then refuses to compare it
+        to a numeric column ("operator does not exist: numeric = character
+        varying"); SQLite compares it happily, so only an assertion on the
+        bound values catches this.
+        """
+        builder = FilterBuilder(SampleModel)
+        query = select(SampleModel)
+
+        assert self._in_values(builder._handle_in(query, "age", "18,25")) == [18, 25]
+        assert self._in_values(builder._handle_in(query, "rate", "2.5,40")) == [
+            Decimal("2.5"),
+            Decimal("40"),
+        ]
+
+    def test_handle_in_keeps_a_value_it_cannot_cast(self):
+        """A caller sending nonsense gets no match, not a crash in the router."""
+        builder = FilterBuilder(SampleModel)
+        query = select(SampleModel)
+        assert self._in_values(builder._handle_in(query, "rate", "x,y")) == ["x", "y"]
+
+    def test_handle_in_leaves_strings_alone(self):
+        builder = FilterBuilder(SampleModel)
+        query = select(SampleModel)
+        assert self._in_values(builder._handle_in(query, "name", "John,Jane")) == [
+            "John",
+            "Jane",
+        ]
 
     def test_apply_operator_filter_gte(self):
         """Test applying GTE operator filter"""

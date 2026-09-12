@@ -1,5 +1,6 @@
 """Filtering logic for CRUD operations"""
 
+from decimal import InvalidOperation
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
 
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy import Select, and_, desc, literal_column, or_
 from sqlalchemy.ext.declarative import DeclarativeMeta
 from sqlalchemy.orm import InstrumentedAttribute
+
+from .schema_factory import _is_numeric_type
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import DeclarativeBase
@@ -179,7 +182,9 @@ class FilterBuilder:
         - Single values: converted to single-item lists
 
         Values are automatically cast to match the column's Python type
-        (e.g., string "4" becomes int 4 for integer columns).
+        (e.g., string "4" becomes int 4 for integer columns). A number is never
+        left as a string: PostgreSQL binds it as ``VARCHAR`` and refuses to
+        compare it to a numeric column ("operator does not exist").
 
         This allows URL parameters like:
         - ?status__in=ACTIVE (single value)
@@ -209,9 +214,9 @@ class FilterBuilder:
         column = getattr(self.model, field)
         try:
             col_python_type = column.property.columns[0].type.python_type
-            if col_python_type in (int, float):
+            if _is_numeric_type(col_python_type):
                 values = [col_python_type(v) for v in values]
-        except (AttributeError, NotImplementedError, ValueError):
+        except (AttributeError, NotImplementedError, ValueError, InvalidOperation):
             pass  # Keep values as-is if type detection fails
 
         return query.where(column.in_(values))
