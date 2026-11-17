@@ -281,6 +281,18 @@ class OrderByBuilder:
 
         return self._parse_order_by(order_by_param)
 
+    def tie_breaker(self) -> Any:
+        """Last ORDER BY key, appended after the requested one: the primary key.
+
+        Without it, rows sharing the sorted value (a status, a date, NULLs) come
+        back in an order the database may change from one query to the next, so
+        paging with LIMIT/OFFSET repeats some rows and skips others.
+
+        Returns:
+            SQLAlchemy order by expression (primary key DESC, the default order)
+        """
+        return desc(getattr(self.model, self.default_pk))
+
     def _parse_order_by(self, order_by_str: str) -> Any:
         """Parse order_by string and return SQLAlchemy expression.
 

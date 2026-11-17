@@ -175,6 +175,10 @@ router = CRUDRouter(
 # Order by created_at DESC
 ```
 
+The primary key (DESC) is always appended as the last sort key: rows sharing the
+sorted value keep the same order from one query to the next, so paging through
+them never repeats nor skips a row.
+
 ## Joins and Relationships
 
 ### Single Relationship (One-to-One, Many-to-One)

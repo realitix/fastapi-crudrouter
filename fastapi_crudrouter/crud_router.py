@@ -1379,8 +1379,11 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             # 6. Count total records (before ordering - ORDER BY breaks COUNT on PostgreSQL)
             count = await self._count_total(db, query)
 
-            # 7. Apply ordering
-            query = query.order_by(self._get_order_by(pagination))
+            # 7. Apply ordering, the primary key breaking the ties so that pages
+            # neither repeat nor skip rows sharing the sorted value
+            query = query.order_by(
+                self._get_order_by(pagination), self._order_builder.tie_breaker()
+            )
 
             # 8. Execute query with pagination
             rows = await self._execute_paginated_query(db, query, limit, skip)
