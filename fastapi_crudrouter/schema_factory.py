@@ -1,6 +1,6 @@
 """Schema factory functions for CRUD operations"""
 
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Mapping, Sequence, Set
 from copy import copy
 from datetime import date, datetime
 from decimal import Decimal
@@ -292,7 +292,10 @@ def is_query_parameter_type(annotation: Any) -> bool:
     return not issubclass(field_type, (BaseModel, Mapping, Sequence, Set))
 
 
-def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]:
+def generate_fields_with_suffixes(
+    base_fields: dict[str, Any],
+    operable: Optional[Callable[[str], bool]] = None,
+) -> dict[str, Any]:
     """Generate filter fields with special operators for date, string, and enum types.
 
     Creates additional filter fields with __gte, __lte operators for date/datetime
@@ -301,6 +304,9 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
 
     Args:
         base_fields: Dictionary of field names to FieldInfo from a Pydantic model
+        operable: Whether an operator can be applied to a field, by its name.
+            An operator reads the model column of that name, so a router passes
+            a check that the column exists. ``None`` takes every field.
 
     Returns:
         Dictionary of new field names with operators to (type, default) tuples
@@ -330,6 +336,8 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
     for field_name, field_info in base_fields.items():
         # Skip operator fields (ending with __like, __gte, __lte, __in)
         if field_name.endswith(("__like", "__gte", "__lte", "__in")):
+            continue
+        if operable is not None and not operable(field_name):
             continue
 
         field_type = extract_python_type(field_info.annotation)
@@ -367,7 +375,10 @@ def generate_fields_with_suffixes(base_fields: dict[str, Any]) -> dict[str, Any]
     return new_fields
 
 
-def create_filter(base_model: type[BaseModel]) -> type[BaseModel]:
+def create_filter(
+    base_model: type[BaseModel],
+    operable: Optional[Callable[[str], bool]] = None,
+) -> type[BaseModel]:
     """Create filter schema with special operators from a base schema.
 
     Extends a Pydantic model with additional fields for filtering operations.
@@ -375,6 +386,8 @@ def create_filter(base_model: type[BaseModel]) -> type[BaseModel]:
 
     Args:
         base_model: Base Pydantic model to extend
+        operable: Whether an operator can be applied to a field, by its name
+            (see ``generate_fields_with_suffixes``).
 
     Returns:
         New Pydantic model class with added filter operator fields
@@ -387,7 +400,7 @@ def create_filter(base_model: type[BaseModel]) -> type[BaseModel]:
         >>> # FilterSchema now has: name, age, name__like, age__gte, age__lte
     """
     base_fields = base_model.model_fields
-    dynamic_fields = generate_fields_with_suffixes(base_fields)
+    dynamic_fields = generate_fields_with_suffixes(base_fields, operable)
 
     return create_model(  # type: ignore[call-overload]
         base_model.__name__,

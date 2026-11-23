@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 import pytest
-from sqlalchemy import JSON, Column, ForeignKey, Integer, Numeric, String
+from sqlalchemy import JSON, Column, ForeignKey, Integer, Numeric, String, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import StaticPool
@@ -243,3 +243,126 @@ class TestAdvertisedFiltersReallyWork:
         """The column a Pydantic constraint used to silence."""
         assert len(self._rates(client, {"label": "x"})) == 3
         assert not self._rates(client, {"label": "nope"})
+
+
+class RateFilter(BaseModel):
+    """Filters a schema declares: one on a model column, one on a joined table."""
+
+    lab_id: Annotated[
+        Optional[int], lambda query, value: query.where(Rate.lab_id == value)
+    ] = None
+    lab_name__like: Annotated[
+        Optional[str],
+        lambda query, value: query.where(
+            Rate.lab_id.in_(select(Lab.id).where(Lab.name.like(f"%{value}%")))
+        ),
+    ] = None
+    # Named after a column of another table, as a joined filter usually is
+    lab_owner_id: Annotated[
+        Optional[int],
+        lambda query, value: query.where(
+            Rate.lab_id.in_(select(Lab.id).where(Lab.id == value))
+        ),
+    ] = None
+
+
+class RateWithProperty(Base):
+    """A model whose read schema shows a ``@property``, read in ORM mode."""
+
+    __tablename__ = "contract_rate_property"
+
+    id = Column(Integer, primary_key=True)
+    rate = Column(Numeric(10, 4))
+
+    @property
+    def percent(self) -> int:
+        return int(self.rate)
+
+
+class RateWithPropertyRead(BaseModel):
+    id: int
+    rate: Decimal
+    percent: int
+
+
+async def _build_declared_filters_app():
+    """Routers whose filters are not all columns of their model."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with session_maker() as session:
+        session.add(Lab(id=1, name="VIATRIS"))
+        session.add(Rate(id=1, lab_id=1, code="a", rate=Decimal("22")))
+        session.add(RateWithProperty(id=1, rate=Decimal("40")))
+        await session.commit()
+
+    async def get_db():
+        async with session_maker() as session:
+            yield session
+
+    app = FastAPI()
+    for router in (
+        SQLAlchemyCRUDRouter(
+            schema=RateRead,
+            create_schema=RateCreate,
+            db_model=Rate,
+            db=get_db,
+            filter_schema=RateFilter,
+            prefix="rate",
+        ),
+        SQLAlchemyCRUDRouter(
+            schema=RateWithPropertyRead,
+            db_model=RateWithProperty,
+            db=get_db,
+            prefix="rate-with-property",
+        ),
+    ):
+        app.include_router(router)
+    return app
+
+
+class TestFiltersOffTheModel:
+    """A generated filter reads the model column of its name.
+
+    A filter the schema declares on a joined table, or a ``@property`` shown
+    by the read schema, has no such column: a generated ``__gte`` on it used to
+    be advertised, and answered with a server error.
+    """
+
+    @pytest.fixture(name="client")
+    def client_fixture(self):
+        return TestClient(asyncio.run(_build_declared_filters_app()))
+
+    def test_declared_filter_off_the_model_takes_no_operator(self, client):
+        filters = client.options("/rate").json()["x-filters"]
+        assert filters["lab_owner_id"] == {"eq": "lab_owner_id"}
+        assert filters["lab_name"] == {"like": "lab_name__like"}
+
+    def test_declared_filter_on_a_column_keeps_its_operators(self, client):
+        filters = client.options("/rate").json()["x-filters"]
+        assert filters["lab_id"] == {
+            "eq": "lab_id",
+            "gte": "lab_id__gte",
+            "lte": "lab_id__lte",
+            "in": "lab_id__in",
+        }
+
+    def test_property_is_not_a_filter(self, client):
+        filters = client.options("/rate-with-property").json()["x-filters"]
+        assert "percent" not in filters
+        assert filters["rate"]["eq"] == "rate"
+
+    @pytest.mark.parametrize("prefix", ["/rate", "/rate-with-property"])
+    def test_every_advertised_key_answers(self, client, prefix):
+        """The contract only lists what the route can apply."""
+        values = {"like": "VIA", "in": "1,2"}
+        filters = client.options(prefix).json()["x-filters"]
+        for operators in filters.values():
+            for operator, key in operators.items():
+                response = client.get(prefix, params={key: values.get(operator, "1")})
+                assert response.status_code == 200, (key, response.text)

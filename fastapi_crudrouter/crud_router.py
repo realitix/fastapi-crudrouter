@@ -104,7 +104,13 @@ try:
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.ext.declarative import DeclarativeMeta
     from sqlalchemy.future import select
-    from sqlalchemy.orm import DeclarativeBase, RelationshipProperty, selectinload
+    from sqlalchemy.orm import (
+        DeclarativeBase,
+        QueryableAttribute,
+        RelationshipProperty,
+        selectinload,
+    )
+    from sqlalchemy.sql import ColumnElement
 except ImportError as e:
     raise ImportError("SQLAlchemy must be installed to use fastapi-crudrouter") from e
 
@@ -654,13 +660,13 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 __base__=filter_schema,  # Preserves callbacks and metadata
                 **additional_fields,
             )
-            self.filter_schema = create_filter(base_filter)
+            self.filter_schema = create_filter(base_filter, self._is_model_column)
         # Use only auto-generated fields
         elif auto_filter_fields:
             base_filter = create_model(  # type: ignore[call-overload]
                 f"{self.schema.__name__}AutoFilter", **auto_filter_fields
             )
-            self.filter_schema = create_filter(base_filter)
+            self.filter_schema = create_filter(base_filter, self._is_model_column)
         else:
             self.filter_schema = None  # type: ignore[assignment]
 
@@ -689,6 +695,18 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             return True
         return isinstance(attribute, (list, tuple)) or hasattr(attribute, "class_")
 
+    def _is_model_column(self, name: str) -> bool:
+        """Whether the model has a SQL expression named ``name``.
+
+        A generated filter -- the equality on a read-schema field, an operator
+        such as ``__gte`` -- is applied by reading the model attribute of that
+        name. Anything else (a ``@property``, a filter the schema declares on
+        a joined table or a computed value) has nothing to compare: offered
+        anyway, the filter would answer with a server error.
+        """
+        attribute = getattr(self.db_model, name, None)
+        return isinstance(attribute, (QueryableAttribute, ColumnElement))
+
     def _generate_auto_filter_fields(self) -> dict[str, tuple]:
         """Generate automatic filter fields from schema"""
         auto_filter_fields = {}
@@ -697,8 +715,10 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
             # Only include simple fields (exclude joins, custom functions) that
             # a client can actually send: a list or JSON column would turn into
             # a body field on the GET route, which no caller can fill.
-            if not self._is_derived_field(field_info) and is_query_parameter_type(
-                field_info.annotation
+            if (
+                not self._is_derived_field(field_info)
+                and is_query_parameter_type(field_info.annotation)
+                and self._is_model_column(field_name)
             ):
                 # Make field optional for filtering
                 origin = get_origin(field_info.annotation)
