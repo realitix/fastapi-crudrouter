@@ -73,8 +73,19 @@ class RateCreate(BaseModel):
     label: Optional[str] = None
 
 
-async def _build_app():
-    """A router over the columns above, on a database the pool really shares.
+def _rate_router(get_db, **kwargs):
+    return SQLAlchemyCRUDRouter(
+        schema=RateRead,
+        create_schema=RateCreate,
+        db_model=Rate,
+        db=get_db,
+        prefix="rate",
+        **kwargs,
+    )
+
+
+async def _build_app(*make_routers, rows=()):
+    """Routers on a database the pool really shares, by default the rate one.
 
     In-memory SQLite alone gives every pooled connection its own empty
     database, so the tables would vanish between the setup and the request;
@@ -90,9 +101,10 @@ async def _build_app():
 
     session_maker = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-    # The rows below reference this lab, and the read schema joins on it.
+    # The rates reference this lab, and the read schema joins on it.
     async with session_maker() as session:
         session.add(Lab(id=1, name="VIATRIS"))
+        session.add_all(rows)
         await session.commit()
 
     async def get_db():
@@ -100,15 +112,8 @@ async def _build_app():
             yield session
 
     app = FastAPI()
-    app.include_router(
-        SQLAlchemyCRUDRouter(
-            schema=RateRead,
-            create_schema=RateCreate,
-            db_model=Rate,
-            db=get_db,
-            prefix="rate",
-        )
-    )
+    for make_router in make_routers or (_rate_router,):
+        app.include_router(make_router(get_db))
     return app
 
 
@@ -257,12 +262,9 @@ class RateFilter(BaseModel):
             Rate.lab_id.in_(select(Lab.id).where(Lab.name.like(f"%{value}%")))
         ),
     ] = None
-    # Named after a column of another table, as a joined filter usually is
+    # Named like no column of the model, as a filter on a joined table is
     lab_owner_id: Annotated[
-        Optional[int],
-        lambda query, value: query.where(
-            Rate.lab_id.in_(select(Lab.id).where(Lab.id == value))
-        ),
+        Optional[int], lambda query, value: query.where(Rate.lab_id == value)
     ] = None
 
 
@@ -285,45 +287,21 @@ class RateWithPropertyRead(BaseModel):
     percent: int
 
 
-async def _build_declared_filters_app():
+def _build_declared_filters_app():
     """Routers whose filters are not all columns of their model."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    session_maker = async_sessionmaker(bind=engine, expire_on_commit=False)
-    async with session_maker() as session:
-        session.add(Lab(id=1, name="VIATRIS"))
-        session.add(Rate(id=1, lab_id=1, code="a", rate=Decimal("22")))
-        session.add(RateWithProperty(id=1, rate=Decimal("40")))
-        await session.commit()
-
-    async def get_db():
-        async with session_maker() as session:
-            yield session
-
-    app = FastAPI()
-    for router in (
-        SQLAlchemyCRUDRouter(
-            schema=RateRead,
-            create_schema=RateCreate,
-            db_model=Rate,
-            db=get_db,
-            filter_schema=RateFilter,
-            prefix="rate",
-        ),
-        SQLAlchemyCRUDRouter(
+    return _build_app(
+        lambda get_db: _rate_router(get_db, filter_schema=RateFilter),
+        lambda get_db: SQLAlchemyCRUDRouter(
             schema=RateWithPropertyRead,
             db_model=RateWithProperty,
             db=get_db,
             prefix="rate-with-property",
         ),
-    ):
-        app.include_router(router)
-    return app
+        rows=[
+            Rate(id=1, lab_id=1, code="a", rate=Decimal("22")),
+            RateWithProperty(id=1, rate=Decimal("40")),
+        ],
+    )
 
 
 class TestFiltersOffTheModel:
@@ -338,13 +316,15 @@ class TestFiltersOffTheModel:
     def client_fixture(self):
         return TestClient(asyncio.run(_build_declared_filters_app()))
 
-    def test_declared_filter_off_the_model_takes_no_operator(self, client):
-        filters = client.options("/rate").json()["x-filters"]
+    @pytest.fixture(name="filters")
+    def filters_fixture(self, client):
+        return client.options("/rate").json()["x-filters"]
+
+    def test_declared_filter_off_the_model_takes_no_operator(self, filters):
         assert filters["lab_owner_id"] == {"eq": "lab_owner_id"}
         assert filters["lab_name"] == {"like": "lab_name__like"}
 
-    def test_declared_filter_on_a_column_keeps_its_operators(self, client):
-        filters = client.options("/rate").json()["x-filters"]
+    def test_declared_filter_on_a_column_keeps_its_operators(self, filters):
         assert filters["lab_id"] == {
             "eq": "lab_id",
             "gte": "lab_id__gte",

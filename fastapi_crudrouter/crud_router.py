@@ -104,13 +104,7 @@ try:
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.ext.declarative import DeclarativeMeta
     from sqlalchemy.future import select
-    from sqlalchemy.orm import (
-        DeclarativeBase,
-        QueryableAttribute,
-        RelationshipProperty,
-        selectinload,
-    )
-    from sqlalchemy.sql import ColumnElement
+    from sqlalchemy.orm import DeclarativeBase, RelationshipProperty, selectinload
 except ImportError as e:
     raise ImportError("SQLAlchemy must be installed to use fastapi-crudrouter") from e
 
@@ -660,15 +654,16 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
                 __base__=filter_schema,  # Preserves callbacks and metadata
                 **additional_fields,
             )
-            self.filter_schema = create_filter(base_filter, self._is_model_column)
         # Use only auto-generated fields
         elif auto_filter_fields:
             base_filter = create_model(  # type: ignore[call-overload]
                 f"{self.schema.__name__}AutoFilter", **auto_filter_fields
             )
-            self.filter_schema = create_filter(base_filter, self._is_model_column)
         else:
-            self.filter_schema = None  # type: ignore[assignment]
+            base_filter = None
+        self.filter_schema = (
+            create_filter(base_filter, self._is_model_column) if base_filter else None
+        )
 
         self.filter_depends: Any = (
             Depends(self.filter_schema) if self.filter_schema else Depends(lambda: None)
@@ -696,16 +691,15 @@ class CRUDRouter(APIRouter):  # pylint: disable=too-many-instance-attributes
         return isinstance(attribute, (list, tuple)) or hasattr(attribute, "class_")
 
     def _is_model_column(self, name: str) -> bool:
-        """Whether the model has a SQL expression named ``name``.
+        """Whether ``name`` is a column of the model.
 
         A generated filter -- the equality on a read-schema field, an operator
-        such as ``__gte`` -- is applied by reading the model attribute of that
+        such as ``__gte`` -- is applied by reading the model column of that
         name. Anything else (a ``@property``, a filter the schema declares on
         a joined table or a computed value) has nothing to compare: offered
         anyway, the filter would answer with a server error.
         """
-        attribute = getattr(self.db_model, name, None)
-        return isinstance(attribute, (QueryableAttribute, ColumnElement))
+        return name in self._model_columns_cache
 
     def _generate_auto_filter_fields(self) -> dict[str, tuple]:
         """Generate automatic filter fields from schema"""
